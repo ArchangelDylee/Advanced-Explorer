@@ -38,6 +38,30 @@ export interface IndexingLogsResponse {
   logs: IndexingLogEntry[];
 }
 
+export interface IndexedFileInfo {
+  path: string;
+  content_preview: string;
+  content_length: number;
+  mtime: string;
+  mtime_formatted: string;
+}
+
+export interface IndexedDatabaseResponse {
+  total_count: number;
+  count: number;
+  limit: number;
+  offset: number;
+  files: IndexedFileInfo[];
+}
+
+export interface IndexedFileDetail {
+  path: string;
+  content: string;
+  content_length: number;
+  mtime: string;
+  mtime_formatted: string;
+}
+
 export interface SearchResult {
   path: string;
   name: string;
@@ -160,6 +184,33 @@ export async function clearIndexingLogs(): Promise<any> {
     return await response.json();
   } catch (error) {
     console.error('로그 초기화 오류:', error);
+    throw error;
+  }
+}
+
+/**
+ * 인덱싱 DB 전체 조회 (SELECT * FROM files_fts)
+ */
+export async function getIndexedDatabase(limit: number = 1000, offset: number = 0): Promise<IndexedDatabaseResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/indexing/database?limit=${limit}&offset=${offset}`);
+    return await response.json();
+  } catch (error) {
+    console.error('DB 조회 오류:', error);
+    throw error;
+  }
+}
+
+/**
+ * 특정 파일의 상세 정보 조회
+ */
+export async function getIndexedFileDetail(filePath: string): Promise<IndexedFileDetail> {
+  try {
+    const encodedPath = encodeURIComponent(filePath);
+    const response = await fetch(`${API_BASE_URL}/indexing/database/${encodedPath}`);
+    return await response.json();
+  } catch (error) {
+    console.error('파일 상세 조회 오류:', error);
     throw error;
   }
 }

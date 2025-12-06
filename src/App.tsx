@@ -330,6 +330,8 @@ export default function App() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
   const [indexingLog, setIndexingLog] = useState<IndexLogEntry[]>([]);
+  const [indexedDatabase, setIndexedDatabase] = useState<BackendAPI.IndexedFileInfo[]>([]);
+  const [dbTotalCount, setDbTotalCount] = useState<number>(0);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
@@ -1275,7 +1277,20 @@ export default function App() {
             <div className="h-8 border-b border-[#444] bg-[#252525] flex items-center justify-between px-3">
               <span className="text-xs font-bold text-[#D0D0D0]">{showIndexingLog ? '인덱싱 DB 내역' : '내용 보기 및 편집'}</span>
               <button 
-                onClick={() => setShowIndexingLog(!showIndexingLog)} 
+                onClick={async () => {
+                  if (!showIndexingLog) {
+                    // 인덱싱 보기로 전환 시 DB 조회
+                    try {
+                      const dbResponse = await BackendAPI.getIndexedDatabase(1000, 0);
+                      setIndexedDatabase(dbResponse.files);
+                      setDbTotalCount(dbResponse.total_count);
+                    } catch (error) {
+                      console.error('DB 조회 오류:', error);
+                      addSearchLog('DB 조회 실패');
+                    }
+                  }
+                  setShowIndexingLog(!showIndexingLog);
+                }} 
                 className="flex items-center gap-1 text-[11px] px-2 py-0.5 border border-[#444] rounded bg-[#333] text-gray-300 hover:text-white hover:bg-[#444] active:scale-95 transition-transform duration-100"
               >
                 {showIndexingLog ? <FileText size={10}/> : <List size={10}/>}
@@ -1284,26 +1299,59 @@ export default function App() {
             </div>
             <div className="flex-1 p-4 overflow-auto text-[#D0D0D0] text-xs font-mono">
               {showIndexingLog ? (
-                <div className="space-y-1">
-                  {indexingLog.length === 0 ? (
-                    <div className="text-gray-500 text-center py-4">
-                      인덱싱 로그가 없습니다. 색인을 시작하세요.
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center mb-3 pb-2 border-b border-[#444]">
+                    <span className="text-sm font-bold text-[#0078D7]">
+                      인덱싱 DB 조회 결과 (총 {dbTotalCount.toLocaleString()}개)
+                    </span>
+                    <span className="text-[10px] text-gray-500">
+                      SELECT * FROM files_fts ORDER BY mtime DESC LIMIT 1000
+                    </span>
+                  </div>
+                  
+                  {indexedDatabase.length === 0 ? (
+                    <div className="text-gray-500 text-center py-8">
+                      <div className="mb-2">인덱싱된 파일이 없습니다.</div>
+                      <div className="text-[10px]">색인을 시작하여 파일을 인덱싱하세요.</div>
                     </div>
                   ) : (
-                    indexingLog.map((log, i) => (
-                      <div key={i} className="flex gap-2 border-b border-[#333] pb-1 text-[11px]">
-                        <span className="text-gray-500 shrink-0">[{log.time}]</span>
-                        <span className={
-                          log.status === 'Error' ? 'text-red-400 shrink-0 font-bold' : 
-                          log.status === 'Skip' ? 'text-yellow-400 shrink-0 font-bold' : 
-                          log.status === 'Indexing' ? 'text-blue-400 shrink-0 font-bold' :
-                          log.status === 'Retry Success' ? 'text-cyan-400 shrink-0 font-bold' :
-                          'text-green-400 shrink-0 font-bold'
-                        }>{log.status}</span>
-                        <span className="truncate flex-1">{log.path}</span>
-                        <span className="text-gray-400 shrink-0 text-[10px]">{log.size}</span>
-                      </div>
-                    ))
+                    <div className="space-y-2">
+                      {indexedDatabase.map((file, i) => (
+                        <div key={i} className="border border-[#333] rounded p-2 hover:bg-[#252525] transition-colors">
+                          <div className="flex items-start gap-2 mb-1">
+                            <span className="text-[10px] text-gray-500 shrink-0">#{i + 1}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <FileText size={12} className="text-blue-400 shrink-0" />
+                                <span className="text-[11px] text-[#0078D7] truncate font-semibold" title={file.path}>
+                                  {file.path}
+                                </span>
+                              </div>
+                              
+                              <div className="grid grid-cols-3 gap-2 text-[10px] mb-2">
+                                <div className="text-gray-400">
+                                  <span className="text-gray-500">크기:</span> {file.content_length.toLocaleString()}자
+                                </div>
+                                <div className="text-gray-400">
+                                  <span className="text-gray-500">토큰:</span> {Math.floor(file.content_length / 5).toLocaleString()}개 (추정)
+                                </div>
+                                <div className="text-gray-400">
+                                  <span className="text-gray-500">수정:</span> {file.mtime_formatted}
+                                </div>
+                              </div>
+                              
+                              <div className="bg-[#1a1a1a] p-2 rounded border border-[#2a2a2a]">
+                                <div className="text-[10px] text-gray-500 mb-1">내용 미리보기:</div>
+                                <div className="text-[10px] text-gray-300 leading-relaxed whitespace-pre-wrap break-all">
+                                  {file.content_preview}
+                                  {file.content_length > 200 && <span className="text-gray-500">...</span>}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
               ) : (

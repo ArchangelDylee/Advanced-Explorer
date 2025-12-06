@@ -264,6 +264,77 @@ class DatabaseManager:
             logger.error(f"경로 조회 오류: {e}")
             return []
     
+    def get_all_indexed_files(self, limit: int = 1000, offset: int = 0) -> List[dict]:
+        """
+        인덱싱된 모든 파일 정보 조회 (SELECT * FROM files_fts)
+        
+        Args:
+            limit: 조회할 최대 개수
+            offset: 시작 위치
+        
+        Returns:
+            파일 정보 리스트 [{'path': ..., 'content_preview': ..., 'mtime': ..., 'size': ...}, ...]
+        """
+        try:
+            cursor = self.conn.execute(
+                """
+                SELECT 
+                    path, 
+                    SUBSTR(content, 1, 200) as content_preview,
+                    LENGTH(content) as content_length,
+                    mtime
+                FROM files_fts 
+                ORDER BY mtime DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset)
+            )
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'path': row['path'],
+                    'content_preview': row['content_preview'],
+                    'content_length': row['content_length'],
+                    'mtime': row['mtime'],
+                    'mtime_formatted': datetime.fromtimestamp(float(row['mtime'])).strftime('%Y-%m-%d %H:%M:%S')
+                })
+            
+            return results
+        except sqlite3.Error as e:
+            logger.error(f"전체 파일 조회 오류: {e}")
+            return []
+    
+    def get_indexed_file_detail(self, path: str) -> Optional[dict]:
+        """
+        특정 파일의 상세 정보 조회
+        
+        Args:
+            path: 파일 경로
+        
+        Returns:
+            파일 상세 정보 또는 None
+        """
+        try:
+            cursor = self.conn.execute(
+                "SELECT path, content, mtime FROM files_fts WHERE path = ?",
+                (path,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    'path': row['path'],
+                    'content': row['content'],
+                    'content_length': len(row['content']),
+                    'mtime': row['mtime'],
+                    'mtime_formatted': datetime.fromtimestamp(float(row['mtime'])).strftime('%Y-%m-%d %H:%M:%S')
+                }
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"파일 상세 조회 오류 [{path}]: {e}")
+            return None
+    
     def add_search_history(self, keyword: str):
         """
         검색 히스토리 추가 또는 업데이트

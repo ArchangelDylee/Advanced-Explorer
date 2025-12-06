@@ -188,6 +188,55 @@ def clear_indexing_logs():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/indexing/database', methods=['GET'])
+def get_indexed_database():
+    """
+    인덱싱 DB 전체 조회 (SELECT * FROM files_fts)
+    
+    Query Parameters:
+        limit: 조회할 최대 개수 (기본: 1000)
+        offset: 시작 위치 (기본: 0)
+    """
+    try:
+        limit = request.args.get('limit', 1000, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        # DB에서 전체 인덱싱 데이터 조회
+        files = db_manager.get_all_indexed_files(limit, offset)
+        total_count = db_manager.get_indexed_files_count()
+        
+        return jsonify({
+            'total_count': total_count,
+            'count': len(files),
+            'limit': limit,
+            'offset': offset,
+            'files': files
+        })
+    except Exception as e:
+        logger.error(f"DB 조회 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/indexing/database/<path:file_path>', methods=['GET'])
+def get_indexed_file_detail(file_path):
+    """
+    특정 파일의 상세 정보 조회
+    
+    Args:
+        file_path: 파일 경로
+    """
+    try:
+        file_detail = db_manager.get_indexed_file_detail(file_path)
+        
+        if file_detail:
+            return jsonify(file_detail)
+        else:
+            return jsonify({'error': 'File not found in index'}), 404
+    except Exception as e:
+        logger.error(f"파일 상세 조회 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/search', methods=['POST'])
 def search():
     """파일 검색 (내용만)"""
