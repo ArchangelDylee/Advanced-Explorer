@@ -20,4 +20,18 @@ Thumbs.db
 # Electron
 out/
 
+# Python
+python-backend/venv/
+python-backend/__pycache__/
+python-backend/*.pyc
+python-backend/*.pyo
+python-backend/*.pyd
+python-backend/.Python
+python-backend/env/
+python-backend/ENV/
+python-backend/file_index.db
+python-backend/test_index.db
+python-backend/*.db
+python-backend/logs/
+
 

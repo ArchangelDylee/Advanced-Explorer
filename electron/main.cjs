@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const { spawn } = require('child_process');
 
 // 개발 모드 감지
 const isDev = !app.isPackaged;
 
 let mainWindow;
+let pythonProcess = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -44,8 +46,52 @@ function createWindow() {
   });
 }
 
+// Python 백엔드 시작
+function startPythonBackend() {
+  try {
+    const pythonBackendPath = path.join(__dirname, '../python-backend');
+    const pythonExe = path.join(pythonBackendPath, 'venv/Scripts/python.exe');
+    const serverScript = path.join(pythonBackendPath, 'server.py');
+    
+    // Python이 설치되어 있는지 확인
+    const fs = require('fs');
+    if (!fs.existsSync(serverScript)) {
+      console.warn('Python 백엔드가 설치되지 않았습니다. 검색 기능이 제한됩니다.');
+      return null;
+    }
+    
+    // Python 프로세스 시작
+    const pythonCmd = fs.existsSync(pythonExe) ? pythonExe : 'python';
+    pythonProcess = spawn(pythonCmd, [serverScript], {
+      cwd: pythonBackendPath
+    });
+    
+    pythonProcess.stdout.on('data', (data) => {
+      console.log(`[Python] ${data.toString().trim()}`);
+    });
+    
+    pythonProcess.stderr.on('data', (data) => {
+      console.error(`[Python Error] ${data.toString().trim()}`);
+    });
+    
+    pythonProcess.on('close', (code) => {
+      console.log(`Python 백엔드 종료 (코드: ${code})`);
+      pythonProcess = null;
+    });
+    
+    console.log('Python 백엔드 시작됨');
+    return pythonProcess;
+  } catch (error) {
+    console.error('Python 백엔드 시작 오류:', error);
+    return null;
+  }
+}
+
 // 앱이 준비되면 윈도우 생성
 app.whenReady().then(() => {
+  // Python 백엔드 시작
+  startPythonBackend();
+  
   createWindow();
 
   app.on('activate', () => {
@@ -60,6 +106,15 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+// 앱 종료 전 Python 프로세스 종료
+app.on('before-quit', () => {
+  if (pythonProcess) {
+    console.log('Python 백엔드 종료 중...');
+    pythonProcess.kill();
+    pythonProcess = null;
   }
 });
 
