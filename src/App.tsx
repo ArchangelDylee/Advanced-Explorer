@@ -541,11 +541,11 @@ export default function App() {
   };
 
   // --- Folder Tree Sync Helper ---
-  const syncFolderTreeWithPath = (targetPath: string) => {
+  const syncFolderTreeWithPath = async (targetPath: string) => {
     // 폴더 트리를 재귀적으로 업데이트하여 targetPath를 펼치고 선택
-    const updateTreeNode = (nodes: FolderNode[], pathToFind: string): { nodes: FolderNode[], found: boolean } => {
+    const updateTreeNode = async (nodes: FolderNode[], pathToFind: string): Promise<{ nodes: FolderNode[], found: boolean }> => {
       let found = false;
-      const updatedNodes = nodes.map(node => {
+      const updatedNodes = await Promise.all(nodes.map(async (node) => {
         // 모든 노드의 selected를 false로 초기화
         let updatedNode = { ...node, selected: false };
         
@@ -557,30 +557,80 @@ export default function App() {
         const isParentOfTarget = pathToFind.toLowerCase().startsWith(nodePath.toLowerCase() + '\\');
         
         if (isMatch) {
-          // 정확히 일치하면 선택
+          // 정확히 일치하면 선택하고 펼치기
           updatedNode.selected = true;
-          found = true;
-        } else if (isParentOfTarget && node.children) {
-          // 부모 노드라면 펼치고 자식들을 재귀적으로 확인
           updatedNode.expanded = true;
-          const childResult = updateTreeNode(node.children, pathToFind);
-          updatedNode.children = childResult.nodes;
-          found = childResult.found;
+          
+          // 하위 폴더가 로드되지 않았다면 로드
+          if (!updatedNode.childrenLoaded && node.path) {
+            await loadSubfoldersForSync(updatedNode);
+          }
+          
+          found = true;
+        } else if (isParentOfTarget) {
+          // 부모 노드라면 펼치기
+          updatedNode.expanded = true;
+          
+          // 하위 폴더가 로드되지 않았다면 로드
+          if (!updatedNode.childrenLoaded && node.path) {
+            updatedNode = await loadSubfoldersForSync(updatedNode);
+          }
+          
+          // 자식들을 재귀적으로 확인
+          if (updatedNode.children) {
+            const childResult = await updateTreeNode(updatedNode.children, pathToFind);
+            updatedNode.children = childResult.nodes;
+            found = childResult.found;
+          }
         } else if (node.children) {
           // 그 외의 경우 자식들만 업데이트 (selected: false 적용)
-          const childResult = updateTreeNode(node.children, pathToFind);
+          const childResult = await updateTreeNode(node.children, pathToFind);
           updatedNode.children = childResult.nodes;
           if (childResult.found) found = true;
         }
         
         return updatedNode;
-      });
+      }));
       
       return { nodes: updatedNodes, found };
     };
     
-    const result = updateTreeNode(folderStructure, targetPath);
+    const result = await updateTreeNode(folderStructure, targetPath);
     setFolderStructure(result.nodes);
+  };
+
+  // 동기화용 하위 폴더 로드 (폴더 구조 반환)
+  const loadSubfoldersForSync = async (node: FolderNode): Promise<FolderNode> => {
+    if (node.childrenLoaded || !node.path) return node;
+    
+    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+      try {
+        const electronAPI = (window as any).electronAPI;
+        const subdirs = await electronAPI.readDirectoriesOnly(node.path);
+        
+        // 특수 문자로 시작하는 폴더 필터링
+        const validSubdirs = subdirs.filter((dir: any) => isValidName(dir.name));
+        
+        return {
+          ...node,
+          children: validSubdirs.map((dir: any) => ({
+            name: dir.name,
+            icon: 'Folder',
+            path: dir.path,
+            expanded: false,
+            selected: false,
+            children: [],
+            childrenLoaded: false
+          })),
+          childrenLoaded: true,
+          expanded: true
+        };
+      } catch (error) {
+        console.error('Error loading subfolders for sync:', error);
+        return node;
+      }
+    }
+    return node;
   };
 
   // --- Navigation & Core Logic ---
@@ -622,8 +672,8 @@ export default function App() {
         historyIndex: newIndex
       });
 
-      // 폴더 트리 동기화 (경로 펼치기 및 선택)
-      syncFolderTreeWithPath(folderPath);
+      // 폴더 트리 동기화 (경로 펼치기 및 선택) - 비동기 처리
+      await syncFolderTreeWithPath(folderPath);
 
       // Don't log if it's just initialization
       if (folderName !== activeTab.selectedFolder) {
