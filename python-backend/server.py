@@ -309,6 +309,9 @@ def search():
 def search_combined():
     """통합 검색 (파일명 + 내용)"""
     try:
+        import time as time_module
+        start_time = time_module.time()
+        
         data = request.json
         query = data.get('query', '')
         search_path = data.get('search_path', None)
@@ -327,11 +330,15 @@ def search_combined():
             max_results
         )
         
+        # 검색 시간 계산
+        search_time = time_module.time() - start_time
+        
         return jsonify({
             'query': query,
             'parsed': parsed,
             'count': len(results),
-            'results': results
+            'results': results,
+            'search_time': round(search_time, 3)
         })
     
     except Exception as e:

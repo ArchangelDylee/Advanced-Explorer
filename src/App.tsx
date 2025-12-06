@@ -920,54 +920,93 @@ export default function App() {
     updateActiveTab({ files: sorted, sortConfig: { key, direction } });
   };
 
-  const handleSearch = () => {
+  const handleSearch = async () => {
     if (isSearching) return;
-    setIsSearching(true);
-    const searchTerm = activeTab.searchText;
     
+    const searchTerm = activeTab.searchText;
+    if (!searchTerm || searchTerm.trim() === '') {
+      addSearchLog(`⚠️ 검색어를 입력하세요`);
+      return;
+    }
+    
+    setIsSearching(true);
+    
+    // 검색 시작 로그
     addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     addSearchLog(`🔍 검색 시작: "${searchTerm}"`);
     addSearchLog(`검색 범위: ${activeTab.currentPath}`);
     addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     
-    if (searchTerm) {
-      setSearchHistory(prev => [searchTerm, ...prev.filter(t => t !== searchTerm)].slice(0, 10));
-    }
+    // 검색 히스토리 저장
+    setSearchHistory(prev => [searchTerm, ...prev.filter(t => t !== searchTerm)].slice(0, 10));
     
-    // 파일 검색 시뮬레이션
-    setTimeout(() => {
-      if (searchTerm) {
-        const filtered = MOCK_BASE_FILES.filter(f => f.name.toLowerCase().includes(searchTerm.toLowerCase()));
-        
-        // 파일 스캔 프로세스 로그
-        addSearchLog(`📂 총 ${MOCK_BASE_FILES.length}개 파일 스캔 중...`);
-        
-        let totalMatches = 0;
-        filtered.forEach((file, index) => {
-          // 파일당 매칭 수 시뮬레이션 (파일명에서 검색어 등장 횟수)
-          const matchCount = (file.name.toLowerCase().match(new RegExp(searchTerm.toLowerCase(), 'g')) || []).length;
-          totalMatches += matchCount;
-          
-          setTimeout(() => {
-            addSearchLog(`  ✓ ${file.name} - ${matchCount}개 매칭`);
-          }, 100 * (index + 1));
-        });
+    try {
+      // 백엔드 검색 API 호출
+      addSearchLog(`📡 백엔드 검색 엔진에 요청 중...`);
+      
+      const searchPath = searchOptions.subfolder ? activeTab.currentPath : undefined;
+      const response = await BackendAPI.searchCombined(searchTerm, searchPath, 100);
+      
+      addSearchLog(`✓ 검색 쿼리 파싱 완료`);
+      addSearchLog(`📂 DB에서 파일 검색 중...`);
+      
+      const results: BackendAPI.SearchResult[] = response.results || [];
+      
+      if (results.length === 0) {
+        addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        addSearchLog(`⚠️ 검색 결과 없음`);
+        addSearchLog(`   검색어: "${searchTerm}"`);
+        addSearchLog(`   힌트: 먼저 색인을 시작하여 파일을 인덱싱하세요`);
+        addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        updateActiveTab({ files: [] });
+        setIsSearching(false);
+        return;
+      }
+      
+      // 각 파일의 매칭 정보 표시
+      let totalMatches = 0;
+      results.forEach((result, index) => {
+        // 매칭 수 계산 (rank를 기반으로 추정)
+        const matchCount = result.highlight ? result.highlight.length : Math.floor(result.rank * 10);
+        totalMatches += matchCount;
         
         setTimeout(() => {
-          addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-          addSearchLog(`✅ 검색 완료!`);
-          addSearchLog(`   파일: ${filtered.length}개 발견`);
-          addSearchLog(`   매칭: 총 ${totalMatches}개 단어`);
-          addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-          setIsSearching(false);
-        }, 100 * filtered.length + 200);
+          const fileName = result.name;
+          const matchInfo = matchCount > 0 ? `${matchCount}개 매칭` : '파일명 매칭';
+          addSearchLog(`  ✓ ${fileName} - ${matchInfo}`);
+        }, 50 * (index + 1));
+      });
+      
+      // 검색 완료 로그
+      setTimeout(() => {
+        addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        addSearchLog(`✅ 검색 완료!`);
+        addSearchLog(`   파일: ${results.length}개 발견`);
+        addSearchLog(`   매칭: 총 ${totalMatches}개 발견`);
+        addSearchLog(`   검색 시간: ${(response.search_time || 0).toFixed(2)}초`);
+        addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         
-        updateActiveTab({ files: filtered });
-      } else {
-        addSearchLog(`⚠️  검색어를 입력하세요`);
+        // 파일 리스트 업데이트
+        const fileItems: FileItem[] = results.map(result => ({
+          name: result.name,
+          size: result.size ? `${(result.size / 1024).toFixed(1)} KB` : '-',
+          date: result.mtime ? new Date(result.mtime).toLocaleDateString() : '-',
+          type: result.extension || 'file',
+          path: result.path
+        }));
+        
+        updateActiveTab({ files: fileItems });
         setIsSearching(false);
-      }
-    }, 500);
+      }, 50 * results.length + 200);
+      
+    } catch (error) {
+      console.error('검색 오류:', error);
+      addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      addSearchLog(`❌ 검색 실패: ${error}`);
+      addSearchLog(`   백엔드 서버가 실행 중인지 확인하세요`);
+      addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      setIsSearching(false);
+    }
   };
 
   // --- Render Helpers ---
