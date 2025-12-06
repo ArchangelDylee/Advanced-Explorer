@@ -328,7 +328,6 @@ export default function App() {
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>({ isOpen: false, item: null });
   const [showIndexingLog, setShowIndexingLog] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [bottomLogTab, setBottomLogTab] = useState<'indexing' | 'search'>('search'); // 하단 로그 탭
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
   const [indexingLog, setIndexingLog] = useState<IndexLogEntry[]>([]);
   const [indexedDatabase, setIndexedDatabase] = useState<BackendAPI.IndexedFileInfo[]>([]);
@@ -756,7 +755,6 @@ export default function App() {
     try {
       setIsIndexing(true);
       setIndexingStatus('색인 시작 중...');
-      setBottomLogTab('indexing'); // Indexing Log 탭으로 자동 전환
       addSearchLog(`색인 시작: ${selectedDir}`);
       
       const response = await BackendAPI.startIndexing([selectedDir]);
@@ -925,7 +923,6 @@ export default function App() {
   const handleSearch = () => {
     if (isSearching) return;
     setIsSearching(true);
-    setBottomLogTab('search'); // Search Log 탭으로 자동 전환
     const searchTerm = activeTab.searchText;
     
     addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -1437,100 +1434,69 @@ export default function App() {
         <Resizer direction="vertical" onResize={(d) => setLayout(p => ({ ...p, bottomPanelHeight: Math.max(50, p.bottomPanelHeight - d) }))} />
 
         {/* --- Bottom Panel --- */}
-        <div style={{ height: layout.bottomPanelHeight }} className="flex flex-col bg-[#202020] border-t border-[#444]">
-          {/* 탭 헤더 */}
-          <div className="flex items-center gap-0 bg-[#252525] border-b border-[#444]">
-            <button
-              onClick={() => setBottomLogTab('indexing')}
-              className={`px-3 py-1.5 text-xs font-bold transition-colors border-r border-[#444] ${
-                bottomLogTab === 'indexing' 
-                  ? 'bg-[#0067C0] text-white' 
-                  : 'text-[#AAA] hover:bg-[#333] hover:text-white'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <Activity size={12} />
-                Indexing Log
-                {indexingLog.length > 0 && (
-                  <span className="px-1.5 py-0.5 bg-[#0078D7] text-white rounded text-[10px]">
-                    {indexingLog.length}
-                  </span>
-                )}
-              </div>
-            </button>
-            <button
-              onClick={() => setBottomLogTab('search')}
-              className={`px-3 py-1.5 text-xs font-bold transition-colors border-r border-[#444] ${
-                bottomLogTab === 'search' 
-                  ? 'bg-[#0067C0] text-white' 
-                  : 'text-[#AAA] hover:bg-[#333] hover:text-white'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <Search size={12} />
-                Search Log
-                {searchLog.length > 0 && (
-                  <span className="px-1.5 py-0.5 bg-[#0078D7] text-white rounded text-[10px]">
-                    {searchLog.length}
-                  </span>
-                )}
-              </div>
-            </button>
+        <div style={{ height: layout.bottomPanelHeight }} className="flex bg-[#202020] border-t border-[#444]">
+          {/* 왼쪽: Search Log */}
+          <div style={{ width: layout.searchLogWidth }} className="flex flex-col border-r border-[#444]">
+            <div className="px-2 py-1 text-xs font-bold text-[#AAA] bg-[#252525] border-b border-[#444] flex items-center gap-2">
+              <Search size={12} />
+              Search Log
+              {searchLog.length > 1 && (
+                <span className="px-1.5 py-0.5 bg-[#0078D7] text-white rounded text-[9px]">
+                  {searchLog.length}
+                </span>
+              )}
+            </div>
+            <div className="flex-1 p-2 overflow-y-auto font-mono text-xs text-[#D0D0D0] space-y-0.5">
+              {searchLog.map((log, i) => (
+                <div key={i} className="flex items-center gap-1">
+                  {i === 0 && <Search size={12} className="text-blue-400" />}
+                  {log}
+                </div>
+              ))}
+            </div>
           </div>
           
-          {/* 탭 컨텐츠 */}
-          <div className="flex-1 overflow-hidden">
-            {bottomLogTab === 'indexing' ? (
-              /* Indexing Log 탭 */
-              <div className="h-full p-2 overflow-y-auto font-mono text-xs text-[#D0D0D0] space-y-1">
-                {indexingLog.length === 0 ? (
-                  <div className="flex items-center justify-center h-full text-gray-500">
-                    <div className="text-center">
-                      <Activity size={24} className="mx-auto mb-2 opacity-50" />
-                      <div>인덱싱 대기 중...</div>
-                      <div className="text-[10px] mt-1">색인을 시작하면 진행 상황이 표시됩니다</div>
-                    </div>
+          <Resizer direction="horizontal" onResize={(d) => setLayout(p => ({ ...p, searchLogWidth: Math.max(100, p.searchLogWidth + d) }))} />
+          
+          {/* 오른쪽: Indexing Log */}
+          <div className="flex flex-col flex-1">
+            <div className="px-2 py-1 text-xs font-bold text-[#AAA] bg-[#252525] border-b border-[#444] flex items-center gap-2">
+              <Activity size={12} />
+              Indexing Log
+              {indexingLog.length > 0 && (
+                <span className="px-1.5 py-0.5 bg-[#0078D7] text-white rounded text-[9px]">
+                  {indexingLog.length}
+                </span>
+              )}
+            </div>
+            <div className="flex-1 p-2 overflow-y-auto font-mono text-xs text-[#D0D0D0] space-y-1">
+              {indexingLog.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <Activity size={24} className="mx-auto mb-2 opacity-50" />
+                    <div>인덱싱 대기 중...</div>
+                    <div className="text-[10px] mt-1">색인을 시작하면 진행 상황이 표시됩니다</div>
                   </div>
-                ) : (
-                  indexingLog.map((log, i) => (
-                    <div key={i} className="flex items-start gap-2 pb-1 border-b border-[#333]">
-                      <span className="text-gray-500 shrink-0">[{log.time}]</span>
-                      <span className={`shrink-0 font-bold ${
-                        log.status === 'Error' ? 'text-red-400' : 
-                        log.status === 'Skip' ? 'text-yellow-400' : 
-                        log.status === 'Indexing' ? 'text-blue-400' :
-                        log.status === 'Retry Success' ? 'text-cyan-400' :
-                        'text-green-400'
-                      }`}>
-                        {log.status}
-                      </span>
-                      <span className="flex-1 truncate">{log.path}</span>
-                      <span className="text-gray-400 shrink-0 text-[10px]">{log.size}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            ) : (
-              /* Search Log 탭 */
-              <div className="h-full p-2 overflow-y-auto font-mono text-xs text-[#D0D0D0] space-y-0.5">
-                {searchLog.length === 0 ? (
-                  <div className="flex items-center justify-center h-full text-gray-500">
-                    <div className="text-center">
-                      <Search size={24} className="mx-auto mb-2 opacity-50" />
-                      <div>검색 대기 중...</div>
-                      <div className="text-[10px] mt-1">검색을 시작하면 진행 상황이 표시됩니다</div>
-                    </div>
+                </div>
+              ) : (
+                indexingLog.map((log, i) => (
+                  <div key={i} className="flex items-start gap-2 pb-1 border-b border-[#333]">
+                    <span className="text-gray-500 shrink-0">[{log.time}]</span>
+                    <span className={`shrink-0 font-bold ${
+                      log.status === 'Error' ? 'text-red-400' : 
+                      log.status === 'Skip' ? 'text-yellow-400' : 
+                      log.status === 'Indexing' ? 'text-blue-400' :
+                      log.status === 'Retry Success' ? 'text-cyan-400' :
+                      'text-green-400'
+                    }`}>
+                      {log.status}
+                    </span>
+                    <span className="flex-1 truncate">{log.path}</span>
+                    <span className="text-gray-400 shrink-0 text-[10px]">{log.size}</span>
                   </div>
-                ) : (
-                  searchLog.map((log, i) => (
-                    <div key={i} className="flex items-center gap-1">
-                      {i === 0 && <Search size={12} className="text-blue-400" />}
-                      {log}
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>

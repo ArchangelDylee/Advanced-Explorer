@@ -65,19 +65,38 @@ except ImportError:
     logging.warning("olefile not installed. Alternative .hwp support disabled.")
 
 from database import DatabaseManager
+import sys
+import io
 
-# 로깅 설정 (UTF-8 인코딩 강제)
+# ========================================
+# UTF-8 전역 설정 (최우선 실행)
+# ========================================
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# 로그 디렉토리 생성
+LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# 로깅 설정 (콘솔 + 파일, UTF-8 인코딩 강제)
+log_file = os.path.join(LOG_DIR, 'indexer.log')
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler()
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_file, encoding='utf-8', mode='a')
     ]
 )
-# UTF-8 인코딩 설정
+# UTF-8 인코딩 재확인
 for handler in logging.root.handlers:
-    if isinstance(handler, logging.StreamHandler):
-        handler.stream.reconfigure(encoding='utf-8', errors='replace')
+    if isinstance(handler, logging.StreamHandler) and hasattr(handler.stream, 'reconfigure'):
+        try:
+            handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
         
 logger = logging.getLogger(__name__)
 

@@ -67,7 +67,9 @@ function startPythonBackend() {
       env: {
         ...process.env,
         PYTHONIOENCODING: 'utf-8',  // Python 입출력 UTF-8 강제
-        PYTHONUTF8: '1'  // Python 3.7+ UTF-8 모드 활성화
+        PYTHONUTF8: '1',  // Python 3.7+ UTF-8 모드 활성화
+        LANG: 'ko_KR.UTF-8',  // 로케일 설정
+        LC_ALL: 'ko_KR.UTF-8'  // 전체 로케일 설정
       }
     });
     

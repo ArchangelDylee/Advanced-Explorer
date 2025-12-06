@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 PyQt6 GUI for Advanced Explorer
 로컬 파일 인덱싱 및 검색 도구
@@ -5,8 +6,27 @@ PyQt6 GUI for Advanced Explorer
 
 import sys
 import os
+import io
 import requests
 from typing import List, Dict, Optional
+
+# ========================================
+# UTF-8 전역 설정 (최우선 실행)
+# ========================================
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Windows 콘솔 코드 페이지를 UTF-8로 설정 (가능한 경우)
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)  # UTF-8 입력
+        kernel32.SetConsoleOutputCP(65001)  # UTF-8 출력
+    except Exception:
+        pass
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTreeWidget, QTreeWidgetItem,
@@ -616,4 +636,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
 

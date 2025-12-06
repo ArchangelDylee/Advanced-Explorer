@@ -209,3 +209,5 @@ pip install PyQt6
 
 MIT License
 
+
+

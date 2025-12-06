@@ -11,23 +11,52 @@ import threading
 import sys
 import os
 import atexit
+import io
+
+# ========================================
+# UTF-8 전역 설정 (최우선 실행)
+# ========================================
+# Python 표준 출력/에러 스트림을 UTF-8로 강제 설정
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Windows 콘솔 코드 페이지를 UTF-8로 설정 (가능한 경우)
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)  # UTF-8 입력
+        kernel32.SetConsoleOutputCP(65001)  # UTF-8 출력
+    except Exception:
+        pass
 
 from database import DatabaseManager
 from indexer import FileIndexer
 from search import SearchEngine
 
-# 로깅 설정 (UTF-8 인코딩 강제)
+# 로그 디렉토리 생성
+LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# 로깅 설정 (콘솔 + 파일, UTF-8 인코딩 강제)
+log_file = os.path.join(LOG_DIR, 'server.log')
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler()
+        logging.StreamHandler(sys.stdout),  # 콘솔 출력 (UTF-8)
+        logging.FileHandler(log_file, encoding='utf-8', mode='a')  # 파일 출력 (UTF-8)
     ]
 )
-# UTF-8 인코딩 설정
+# UTF-8 인코딩 재확인
 for handler in logging.root.handlers:
-    if isinstance(handler, logging.StreamHandler):
-        handler.stream.reconfigure(encoding='utf-8', errors='replace')
+    if isinstance(handler, logging.StreamHandler) and hasattr(handler.stream, 'reconfigure'):
+        try:
+            handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
         
 logger = logging.getLogger(__name__)
 
