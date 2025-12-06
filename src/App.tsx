@@ -230,8 +230,16 @@ const MOCK_FOLDERS_INITIAL: FolderNode[] = [
     { name: '로컬 디스크 (C:)', icon: 'HardDrive', expanded: true, children: [
       { name: 'Windows', icon: 'Folder' },
       { name: 'Program Files', icon: 'Folder' },
+      { name: 'Program Files (x86)', icon: 'Folder' },
       { name: 'Users', icon: 'Folder', expanded: true, children: [
-        { name: 'Admin', icon: 'Folder', selected: true }
+        { name: 'dylee', icon: 'Folder', selected: true, expanded: true, children: [
+          { name: '문서', icon: 'Folder' },
+          { name: '바탕화면', icon: 'Folder' },
+          { name: '다운로드', icon: 'Folder' },
+          { name: '사진', icon: 'Folder' },
+          { name: '음악', icon: 'Folder' }
+        ]},
+        { name: 'Public', icon: 'Folder' }
       ]}
     ]},
     { name: '로컬 디스크 (D:)', icon: 'HardDrive' }
@@ -313,9 +321,9 @@ export default function App() {
 
   // Tabs (Multi-instance)
   const [tabs, setTabs] = useLocalStorage<TabItem[]>('tabs', [{ 
-    id: 1, title: '내 PC', searchText: '', selectedFolder: '내 PC', currentPath: 'My Computer', selectedFile: null, 
+    id: 1, title: 'dylee', searchText: '', selectedFolder: 'dylee', currentPath: 'C:\\Users\\dylee', selectedFile: null, 
     files: [], sortConfig: { key: null, direction: 'asc' }, 
-    history: [{ name: '내 PC', path: 'My Computer' }], historyIndex: 0 
+    history: [{ name: 'dylee', path: 'C:\\Users\\dylee' }], historyIndex: 0 
   }]);
   const [activeTabId, setActiveTabId] = useLocalStorage<number>('activeTabId', 1);
   const [nextTabId, setNextTabId] = useLocalStorage<number>('nextTabId', 2);
@@ -327,7 +335,6 @@ export default function App() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
   const [isSearching, setIsSearching] = useState(false);
-  const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   
@@ -336,8 +343,8 @@ export default function App() {
 
   // Initialize content for default tab if empty
   useEffect(() => {
-    if (activeTab.files.length === 0 && activeTab.currentPath === 'My Computer') {
-       navigate('내 PC', 'My Computer', true); // Populate initial content
+    if (activeTab.files.length === 0) {
+       navigate(activeTab.selectedFolder, activeTab.currentPath, true); // Populate initial content
     }
   }, []);
 
@@ -351,68 +358,110 @@ export default function App() {
   };
 
   // --- Directory Content Generator (The "Fake" File System) ---
-  const generateDirectoryContent = (folderName: string, path: string): FileItem[] => {
-    // Generate Folders
-    const createFolder = (name: string): FileItem => ({ name, size: '', date: '2023-11-01', type: 'folder', path: `${path}\\${name}` });
-    const createFiles = (): FileItem[] => MOCK_BASE_FILES.map(f => ({ ...f, path: `${path}\\${f.name}` }));
+  // 파일 크기 포맷팅
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+  };
 
-    let content: FileItem[] = [];
+  // 파일 확장자 추출
+  const getFileExtension = (filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    return ext || 'file';
+  };
 
+  const generateDirectoryContent = async (folderName: string, path: string): Promise<FileItem[]> => {
+    // 특수 케이스: 내 PC (드라이브 목록)
     if (folderName === '내 PC' || path === 'My Computer') {
-      // Drives
-      content = [
-        { name: '로컬 디스크 (C:)', size: '', date: '', type: 'folder', path: 'C:' },
-        { name: '로컬 디스크 (D:)', size: '', date: '', type: 'folder', path: 'D:' }
+      return [
+        { name: '로컬 디스크 (C:)', size: '', date: '', type: 'folder', path: 'C:\\' },
+        { name: '로컬 디스크 (D:)', size: '', date: '', type: 'folder', path: 'D:\\' }
       ];
-    } else if (folderName.includes('C:')) {
-      content = [createFolder('Windows'), createFolder('Program Files'), createFolder('Users'), { name: 'pagefile.sys', size: '8GB', date: '2023-10-01', type: 'sys', path: 'C:\\pagefile.sys' }];
-    } else if (folderName === 'Users') {
-      content = [createFolder('Admin'), createFolder('Public')];
-    } else if (folderName === 'Admin') {
-      content = [createFolder('Desktop'), createFolder('Documents'), createFolder('Downloads'), createFolder('Pictures'), ...createFiles().slice(0, 2)];
-    } else if (['바탕화면', 'Desktop'].includes(folderName)) {
-      content = [createFolder('Work'), createFolder('Personal'), ...createFiles().slice(0, 3)];
-    } else {
-      // Default: mix of folders and files
-      content = [createFolder('새 폴더'), ...createFiles()];
     }
-    return content;
+
+    // Electron API를 통해 실제 디렉토리 읽기
+    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+      try {
+        const electronAPI = (window as any).electronAPI;
+        const files = await electronAPI.readDirectory(path);
+        
+        const fileItems: FileItem[] = await Promise.all(
+          files.map(async (file: any) => {
+            const stats = await electronAPI.getFileStats(file.path);
+            const fileSize = stats && !stats.isDirectory ? formatFileSize(stats.size) : '';
+            const modifiedDate = stats ? new Date(stats.modified).toLocaleDateString() : '';
+            
+            return {
+              name: file.name,
+              size: fileSize,
+              date: modifiedDate,
+              type: file.isDirectory ? 'folder' : getFileExtension(file.name),
+              path: file.path
+            };
+          })
+        );
+        
+        return fileItems;
+      } catch (error) {
+        console.error('Error reading directory:', error);
+        addSearchLog(`디렉토리 읽기 오류: ${path}`);
+        return [];
+      }
+    }
+    
+    // Electron이 아닌 경우 빈 배열 반환
+    return [];
   };
 
   // --- Navigation & Core Logic ---
-  const navigate = (folderName: string, folderPath: string, isHistoryNav = false) => {
-    const rawContent = generateDirectoryContent(folderName, folderPath);
-    
-    // Sort: Folders first, then files
-    rawContent.sort((a, b) => {
-      if (a.type === 'folder' && b.type !== 'folder') return -1;
-      if (a.type !== 'folder' && b.type === 'folder') return 1;
-      return a.name.localeCompare(b.name);
-    });
+  const navigate = async (folderName: string, folderPath: string, isHistoryNav = false) => {
+    try {
+      let rawContent = await generateDirectoryContent(folderName, folderPath);
+      
+      // Filter invalid names (starting with special chars)
+      // Allowed: Letters, Numbers, Korean (and let's allow space for 'New Folder')
+      // Regex: Starts with alphanumeric or Korean. 
+      // We'll exclude ., _, $, [ which are typical special chars to hide
+      const isValidName = (name: string) => /^[a-zA-Z0-9가-힣]/.test(name);
+      rawContent = rawContent.filter(item => isValidName(item.name));
 
-    let newHistory = activeTab.history;
-    let newIndex = activeTab.historyIndex;
+      // Sort: Folders first, then files
+      rawContent.sort((a, b) => {
+        if (a.type === 'folder' && b.type !== 'folder') return -1;
+        if (a.type !== 'folder' && b.type === 'folder') return 1;
+        return a.name.localeCompare(b.name);
+      });
 
-    if (!isHistoryNav) {
-      newHistory = activeTab.history.slice(0, activeTab.historyIndex + 1);
-      newHistory.push({ name: folderName, path: folderPath });
-      newIndex = newHistory.length - 1;
-    }
+      let newHistory = activeTab.history;
+      let newIndex = activeTab.historyIndex;
 
-    updateActiveTab({ 
-      selectedFolder: folderName, 
-      currentPath: folderPath,
-      title: folderName,
-      files: rawContent,
-      selectedFile: null,
-      searchText: '',
-      history: newHistory,
-      historyIndex: newIndex
-    });
+      if (!isHistoryNav) {
+        newHistory = activeTab.history.slice(0, activeTab.historyIndex + 1);
+        newHistory.push({ name: folderName, path: folderPath });
+        newIndex = newHistory.length - 1;
+      }
 
-    // Don't log if it's just initialization
-    if (folderName !== activeTab.selectedFolder) {
-      addSearchLog(isHistoryNav ? `탐색(히스토리): ${folderName}` : `디렉토리 이동: ${folderPath}`);
+      updateActiveTab({ 
+        selectedFolder: folderName, 
+        currentPath: folderPath,
+        title: folderName,
+        files: rawContent,
+        selectedFile: null,
+        searchText: '',
+        history: newHistory,
+        historyIndex: newIndex
+      });
+
+      // Don't log if it's just initialization
+      if (folderName !== activeTab.selectedFolder) {
+        addSearchLog(isHistoryNav ? `탐색(히스토리): ${folderName}` : `디렉토리 이동: ${folderPath}`);
+      }
+    } catch (error) {
+      console.error('Navigation error:', error);
+      addSearchLog(`탐색 오류: ${folderPath}`);
     }
   };
 
@@ -533,19 +582,11 @@ export default function App() {
     }, 2000);
   };
 
-  const handleIndexStart = () => {
-    if (isIndexing) return;
-    setIsIndexing(true);
-    addSearchLog('색인 시작...');
-    setTimeout(() => {
-      setIsIndexing(false);
-      addSearchLog('색인 완료: 1,204개 파일 인덱싱됨');
-    }, 3000);
-  };
-
   // --- Render Helpers ---
   const renderTree = (nodes: FolderNode[], level = 0, parentPath = "C:\\Users\\Admin") => {
-    return nodes.map((node, idx) => {
+    const isValidName = (name: string) => /^[a-zA-Z0-9가-힣]/.test(name);
+    
+    return nodes.filter(node => isValidName(node.name)).map((node, idx) => {
       // Mock path construction
       let currentPath = `${parentPath}\\${node.name}`;
       if (node.name.includes("(:)")) { const match = node.name.match(/\((.*?)\)/); if (match) currentPath = match[1] + "\\"; } 
@@ -663,10 +704,11 @@ export default function App() {
               </div>
             )}
           </div>
-          <button onClick={handleSearch} disabled={isSearching} className={`flex items-center px-4 py-1.5 text-white transition-transform duration-100 border border-[#005A9E] rounded-sm active:scale-95 ${isSearching ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
+          {/* Search Button without animation */}
+          <button onClick={handleSearch} disabled={isSearching} className={`flex items-center px-4 py-1.5 text-white border border-[#005A9E] rounded-sm ${isSearching ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
             {isSearching ? <Activity size={14} className="animate-spin mr-1"/> : <Play size={14} className="mr-1" fill="currentColor"/>} 검색
           </button>
-          <button onClick={() => { setIsSearching(false); addSearchLog('검색 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 transition-transform duration-100">
+          <button onClick={() => { setIsSearching(false); addSearchLog('검색 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm">
             <Square size={14} className="mr-1" fill="currentColor"/> 중지
           </button>
           <div className="w-4" />
@@ -678,10 +720,8 @@ export default function App() {
         <div className="flex items-center px-3 pb-3 space-x-3 justify-between">
           <div className="flex items-center space-x-3">
             <span className="font-bold text-[#D0D0D0]">색인:</span>
-            <button onClick={handleIndexStart} disabled={isIndexing} className={`flex items-center px-4 py-1.5 text-white transition-transform duration-100 border border-[#005A9E] rounded-sm active:scale-95 ${isIndexing ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
-              {isIndexing ? <Activity size={14} className="animate-spin mr-1"/> : <Play size={14} className="mr-1" fill="currentColor"/>} 시작
-            </button>
-            <button onClick={() => { setIsIndexing(false); setIsIndexStopping(true); setTimeout(() => setIsIndexStopping(false), 500); addSearchLog('색인 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 transition-transform duration-100"><Square size={14} className="mr-1" fill="currentColor"/> 중지</button>
+            <button disabled={isIndexStopping} className="flex items-center px-4 py-1.5 text-white border border-[#005A9E] bg-[#0067C0] hover:bg-[#0078D7] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100"><Play size={14} className="mr-1" fill="currentColor"/> 시작</button>
+            <button onClick={() => { setIsIndexStopping(true); setTimeout(() => setIsIndexStopping(false), 500); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] rounded-sm active:scale-95 active:bg-[#1a1a1a] transition-all duration-100"><Pause size={14} className="mr-1" fill="currentColor"/> 중지</button>
             <span className="text-gray-500 px-2">대기 중...</span>
             <span className="text-[#D0D0D0]">누적: 1,204 개</span>
           </div>
@@ -722,7 +762,11 @@ export default function App() {
                 <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
                   <Star size={12} className="mr-1.5 text-[#A855F7]" fill="#A855F7"/> 즐겨찾기
                 </div>
-                <div>{FAVORITES.map((fav, i) => <TreeItem key={i} label={fav.name} IconComponent={fav.icon} isSelected={activeTab.selectedFolder === fav.name} onClick={() => navigate(fav.name, fav.path)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: fav.name, path: fav.path, type: 'folder' } }); }} />)}</div>
+                <div>
+                  {FAVORITES.filter(fav => /^[a-zA-Z0-9가-힣]/.test(fav.name)).map((fav, i) => (
+                    <TreeItem key={i} label={fav.name} IconComponent={fav.icon} isSelected={activeTab.selectedFolder === fav.name} onClick={() => navigate(fav.name, fav.path)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: fav.name, path: fav.path, type: 'folder' } }); }} />
+                  ))}
+                </div>
               </div>
               
               {/* Folder Tree */}
