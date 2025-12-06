@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -231,6 +231,30 @@ ipcMain.handle('read-image-file', async (event, filePath) => {
     };
   } catch (error) {
     console.error('Error reading image file:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// 파일을 기본 프로그램으로 열기
+ipcMain.handle('open-file', async (event, filePath) => {
+  try {
+    const result = await shell.openPath(filePath);
+    if (result) {
+      // openPath는 에러가 있으면 에러 메시지를 반환, 없으면 빈 문자열
+      console.error('Error opening file:', result);
+      return {
+        success: false,
+        error: result
+      };
+    }
+    return {
+      success: true
+    };
+  } catch (error) {
+    console.error('Error opening file:', error);
     return {
       success: false,
       error: error.message

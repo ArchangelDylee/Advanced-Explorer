@@ -233,7 +233,8 @@ const MOCK_FOLDERS_INITIAL: FolderNode[] = [
     name: '내 PC', 
     icon: 'Monitor', 
     path: 'My Computer',
-    expanded: true, 
+    expanded: true,
+    selected: false,
     children: [],
     childrenLoaded: false
   }
@@ -363,11 +364,13 @@ export default function App() {
                       icon: 'Folder',
                       path: dir.path,
                       expanded: true,
+                      selected: false,
                       children: validUserDirs.map((userDir: any) => ({
                         name: userDir.name,
                         icon: 'Folder',
                         path: userDir.path,
                         expanded: false,
+                        selected: false,
                         children: [],
                         childrenLoaded: false
                       })),
@@ -380,6 +383,7 @@ export default function App() {
                     icon: 'Folder',
                     path: dir.path,
                     expanded: false,
+                    selected: false,
                     children: [],
                     childrenLoaded: false
                   };
@@ -391,6 +395,7 @@ export default function App() {
                 icon: 'HardDrive',
                 path: drive.path,
                 expanded: true, // 모든 드라이브 펼침
+                selected: false,
                 children: rootChildren,
                 childrenLoaded: true
               };
@@ -402,6 +407,7 @@ export default function App() {
             icon: 'Monitor',
             path: 'My Computer',
             expanded: true, // 내 PC 펼침
+            selected: false,
             children: driveNodes,
             childrenLoaded: true
           }]);
@@ -534,6 +540,49 @@ export default function App() {
     return [];
   };
 
+  // --- Folder Tree Sync Helper ---
+  const syncFolderTreeWithPath = (targetPath: string) => {
+    // 폴더 트리를 재귀적으로 업데이트하여 targetPath를 펼치고 선택
+    const updateTreeNode = (nodes: FolderNode[], pathToFind: string): { nodes: FolderNode[], found: boolean } => {
+      let found = false;
+      const updatedNodes = nodes.map(node => {
+        // 모든 노드의 selected를 false로 초기화
+        let updatedNode = { ...node, selected: false };
+        
+        // 현재 노드가 타겟 경로와 일치하는지 확인
+        const nodePath = node.path || node.name;
+        const isMatch = nodePath.toLowerCase() === pathToFind.toLowerCase();
+        
+        // 타겟 경로가 현재 노드의 하위 경로인지 확인
+        const isParentOfTarget = pathToFind.toLowerCase().startsWith(nodePath.toLowerCase() + '\\');
+        
+        if (isMatch) {
+          // 정확히 일치하면 선택
+          updatedNode.selected = true;
+          found = true;
+        } else if (isParentOfTarget && node.children) {
+          // 부모 노드라면 펼치고 자식들을 재귀적으로 확인
+          updatedNode.expanded = true;
+          const childResult = updateTreeNode(node.children, pathToFind);
+          updatedNode.children = childResult.nodes;
+          found = childResult.found;
+        } else if (node.children) {
+          // 그 외의 경우 자식들만 업데이트 (selected: false 적용)
+          const childResult = updateTreeNode(node.children, pathToFind);
+          updatedNode.children = childResult.nodes;
+          if (childResult.found) found = true;
+        }
+        
+        return updatedNode;
+      });
+      
+      return { nodes: updatedNodes, found };
+    };
+    
+    const result = updateTreeNode(folderStructure, targetPath);
+    setFolderStructure(result.nodes);
+  };
+
   // --- Navigation & Core Logic ---
   const navigate = async (folderName: string, folderPath: string, isHistoryNav = false) => {
     try {
@@ -572,6 +621,9 @@ export default function App() {
         history: newHistory,
         historyIndex: newIndex
       });
+
+      // 폴더 트리 동기화 (경로 펼치기 및 선택)
+      syncFolderTreeWithPath(folderPath);
 
       // Don't log if it's just initialization
       if (folderName !== activeTab.selectedFolder) {
@@ -723,6 +775,7 @@ export default function App() {
                   icon: 'Folder',
                   path: dir.path,
                   expanded: false,
+                  selected: false,
                   children: [],
                   childrenLoaded: false
                 })),
@@ -759,7 +812,7 @@ export default function App() {
             expanded={node.expanded} 
             hasChildren={hasChildren || !node.childrenLoaded} 
             level={level}
-            isSelected={activeTab.selectedFolder === node.name}
+            isSelected={node.selected || false}
             onClick={() => navigate(node.name, currentPath)}
             onContextMenu={(e) => { 
               e.preventDefault(); 
@@ -979,7 +1032,26 @@ export default function App() {
                       // 수평선(border-b) 제거
                       className={`flex h-7 items-center cursor-default text-xs active:bg-[#383838] transition-colors duration-75 ${isSelected ? 'bg-[#333] text-white' : 'text-[#D0D0D0] hover:bg-[#2A2A2A]'}`}
                       onClick={(e) => { e.stopPropagation(); updateActiveTab({ selectedFile: file }); }}
-                      onDoubleClick={() => file.type === 'folder' ? navigate(file.name, file.path || `...\\${file.name}`) : addSearchLog(`파일 열기: ${file.name}`)}
+                      onDoubleClick={async () => {
+                        if (file.type === 'folder') {
+                          navigate(file.name, file.path || `...\\${file.name}`);
+                        } else if (file.path) {
+                          // 일반 파일 - 기본 프로그램으로 열기
+                          if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                            try {
+                              const result = await (window as any).electronAPI.openFile(file.path);
+                              if (result.success) {
+                                addSearchLog(`파일 열기: ${file.name}`);
+                              } else {
+                                addSearchLog(`파일 열기 실패: ${file.name} - ${result.error}`);
+                              }
+                            } catch (error) {
+                              console.error('Error opening file:', error);
+                              addSearchLog(`파일 열기 오류: ${file.name}`);
+                            }
+                          }
+                        }
+                      }}
                       onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: file.name, path: file.path || '', type: file.type } }); }}
                     >
                       <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden">
