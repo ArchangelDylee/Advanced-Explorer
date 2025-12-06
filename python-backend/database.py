@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 데이터베이스 모듈 - SQLite FTS5를 사용한 파일 인덱스 관리
 """
@@ -8,8 +9,19 @@ from typing import List, Tuple, Optional
 from datetime import datetime
 import logging
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 로깅 설정 (UTF-8 인코딩 강제)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+# UTF-8 인코딩 설정
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        
 logger = logging.getLogger(__name__)
 
 

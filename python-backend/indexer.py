@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 파일 인덱싱 엔진 - 비동기 파일 시스템 크롤링 및 텍스트 추출
 """
@@ -13,6 +14,8 @@ from datetime import datetime
 import traceback
 import signal
 from functools import wraps
+import re
+import unicodedata
 
 # 텍스트 추출 라이브러리
 import chardet  # 인코딩 자동 감지
@@ -63,8 +66,19 @@ except ImportError:
 
 from database import DatabaseManager
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 로깅 설정 (UTF-8 인코딩 강제)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+# UTF-8 인코딩 설정
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        
 logger = logging.getLogger(__name__)
 
 # 상수 정의
@@ -384,7 +398,10 @@ class FileIndexer:
     
     def _count_tokens(self, text: str) -> int:
         """
-        텍스트의 토큰(단어) 수 계산
+        텍스트의 토큰(단어) 수 계산 (다국어 지원)
+        
+        - 한글/중국어/일본어(CJK): 각 문자를 1토큰으로 계산
+        - 영어/기타 언어: 공백 기준 단어로 계산
         
         Args:
             text: 텍스트 문자열
@@ -394,9 +411,32 @@ class FileIndexer:
         """
         if not text:
             return 0
-        # 공백, 줄바꿈 등으로 분리하여 토큰 수 계산
-        tokens = text.split()
-        return len(tokens)
+        
+        token_count = 0
+        
+        # CJK 문자 패턴 (한글, 중국어, 일본어)
+        # - 한글: \uAC00-\uD7AF (가-힣), \u1100-\u11FF, \u3130-\u318F
+        # - 중국어: \u4E00-\u9FFF
+        # - 일본어: \u3040-\u309F (히라가나), \u30A0-\u30FF (가타카나)
+        cjk_pattern = re.compile(r'[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF]')
+        
+        # 텍스트를 CJK 문자와 비CJK 부분으로 분리
+        parts = re.split(r'([\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF]+)', text)
+        
+        for part in parts:
+            if not part.strip():
+                continue
+            
+            # CJK 문자인 경우 각 문자를 1토큰으로
+            if cjk_pattern.search(part):
+                # 공백 제거 후 문자 수 계산
+                token_count += len(part.strip())
+            else:
+                # 영어 등 공백 기반 언어는 단어 수로 계산
+                words = part.split()
+                token_count += len(words)
+        
+        return token_count
     
     def _log_success(self, path: str, char_count: int, token_count: int = 0, db_saved: bool = True):
         """

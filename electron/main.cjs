@@ -60,18 +60,23 @@ function startPythonBackend() {
       return null;
     }
     
-    // Python 프로세스 시작
+    // Python 프로세스 시작 (UTF-8 인코딩 강제)
     const pythonCmd = fs.existsSync(pythonExe) ? pythonExe : 'python';
     pythonProcess = spawn(pythonCmd, [serverScript], {
-      cwd: pythonBackendPath
+      cwd: pythonBackendPath,
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',  // Python 입출력 UTF-8 강제
+        PYTHONUTF8: '1'  // Python 3.7+ UTF-8 모드 활성화
+      }
     });
     
     pythonProcess.stdout.on('data', (data) => {
-      console.log(`[Python] ${data.toString().trim()}`);
+      console.log(`[Python] ${data.toString('utf8').trim()}`);
     });
     
     pythonProcess.stderr.on('data', (data) => {
-      console.error(`[Python Error] ${data.toString().trim()}`);
+      console.error(`[Python Error] ${data.toString('utf8').trim()}`);
     });
     
     pythonProcess.on('close', (code) => {

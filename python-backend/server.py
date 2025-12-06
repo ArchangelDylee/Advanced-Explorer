@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 API 서버 - Electron과 Python 백엔드 통신
 Flask 기반 REST API
@@ -15,12 +16,25 @@ from database import DatabaseManager
 from indexer import FileIndexer
 from search import SearchEngine
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 로깅 설정 (UTF-8 인코딩 강제)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+# UTF-8 인코딩 설정
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        
 logger = logging.getLogger(__name__)
 
 # Flask 앱 생성
 app = Flask(__name__)
+app.config['JSON_AS_ASCII'] = False  # UTF-8 인코딩 강제 (한글 등 유니코드 문자 정상 표시)
+app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 CORS(app)  # CORS 허용
 
 # 전역 객체

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 검색 엔진 - 고속 전문 검색 및 결과 포맷팅
 """
@@ -7,7 +8,19 @@ from typing import List, Dict, Optional
 import logging
 from database import DatabaseManager
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 로깅 설정 (UTF-8 인코딩 강제)
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+# UTF-8 인코딩 설정
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler):
+        handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        
 logger = logging.getLogger(__name__)
 
 
