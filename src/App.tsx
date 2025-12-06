@@ -1,0 +1,818 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Search, Play, Square, Pause, Folder, File, FileText, 
+  Monitor, HardDrive, Trash2, Copy, Clipboard, MoreHorizontal,
+  ChevronRight, ChevronDown, Image as ImageIcon, Info,
+  ArrowUp, ArrowDown, Clock, X, Plus,
+  FileSpreadsheet, FileCode, FileArchive, LayoutTemplate,
+  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity
+} from 'lucide-react';
+
+// --- Types & Interfaces ---
+
+interface FileItem {
+  name: string;
+  size: string;
+  date: string;
+  type: string; // 'folder' | 'file' extension
+  path?: string; // Full path for navigation
+}
+
+interface FolderNode {
+  name: string;
+  icon: string;
+  expanded?: boolean;
+  selected?: boolean;
+  children?: FolderNode[];
+}
+
+interface FavoriteItem {
+  name: string;
+  path: string;
+  icon: LucideIcon;
+}
+
+interface SortConfig {
+  key: keyof FileItem | null;
+  direction: 'asc' | 'desc';
+}
+
+interface HistoryEntry {
+  name: string;
+  path: string;
+}
+
+interface TabItem {
+  id: number;
+  title: string;
+  searchText: string;
+  selectedFolder: string; // Current Folder Name
+  currentPath: string;    // Current Full Path
+  selectedFile: FileItem | null;
+  files: FileItem[];      // Content of current folder
+  sortConfig: SortConfig;
+  // Navigation History
+  history: HistoryEntry[];
+  historyIndex: number;
+}
+
+interface LayoutState {
+  sidebarWidth: number;
+  fileListWidth: number;
+  bottomPanelHeight: number;
+  favoritesHeight: number;
+  searchLogWidth: number;
+}
+
+interface ColWidthsState {
+  name: number;
+  size: number;
+  date: number;
+}
+
+interface SearchOptionsState {
+  content: boolean;
+  subfolder: boolean;
+}
+
+interface TypeFiltersState {
+  [key: string]: boolean;
+}
+
+interface ContextMenuTarget {
+  name: string;
+  path: string;
+  type: string;
+}
+
+interface ContextMenuState {
+  visible: boolean;
+  x: number;
+  y: number;
+  target: ContextMenuTarget | null;
+}
+
+interface DeleteDialogState {
+  isOpen: boolean;
+  item: FileItem | null;
+}
+
+interface IndexLogEntry {
+  time: string;
+  path: string;
+  status: 'Indexed' | 'Skipped' | 'Error';
+  size: string;
+}
+
+// Component Props Interfaces
+interface ResizerProps {
+  direction: 'horizontal' | 'vertical';
+  onResize: (delta: number) => void;
+}
+
+interface CheckboxProps {
+  id: string;
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}
+
+interface TreeItemProps {
+  label: string;
+  IconComponent: LucideIcon;
+  expanded?: boolean;
+  hasChildren?: boolean;
+  level?: number;
+  isSelected?: boolean;
+  onClick?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  onToggle?: () => void;
+}
+
+// --- 스타일 상수 (Windows 11 Dark Mica) ---
+const COLORS = {
+  windowBg: '#191919',
+  titleBarBg: '#121212',
+  panelBg: '#202020',
+  border: '#444444',
+  textPrimary: '#FFFFFF',
+  textSecondary: '#D0D0D0',
+  accentBlue: '#0067C0',
+  hoverBg: '#333333',
+  headerBg: '#2C2C2C',
+  selectionBg: '#444444',
+  scrollbarTrack: '#202020',
+  scrollbarThumb: '#444444',
+  scrollbarThumbHover: '#666666',
+  accentRed: '#DC2626',
+  tabActive: '#202020',
+  tabInactive: 'transparent',
+  tabHover: '#2A2A2A',
+  menuBg: '#2D2D2D'
+};
+
+// --- LocalStorage Hook ---
+function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T | ((val: T) => T)) => void] {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    if (typeof window === "undefined") {
+      return initialValue;
+    }
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      console.warn(`Error reading localStorage key "${key}":`, error);
+      return initialValue;
+    }
+  });
+
+  const setValue = (value: T | ((val: T) => T)) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+      }
+    } catch (error) {
+      console.warn(`Error setting localStorage key "${key}":`, error);
+    }
+  };
+
+  return [storedValue, setValue];
+}
+
+// --- Helper Functions ---
+
+// Get Icon based on file extension or folder type
+const getFileIconProps = (item: FileItem): { Icon: LucideIcon; color: string } => {
+  if (item.type === 'folder') {
+    return { Icon: Folder, color: '#FBBF24' }; // Yellow Folder
+  }
+
+  const filename = item.name;
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  
+  switch (ext) {
+    case 'xlsx': case 'xls': case 'csv': return { Icon: FileSpreadsheet, color: '#107C41' };
+    case 'pptx': case 'ppt': return { Icon: LayoutTemplate, color: '#C43E1C' };
+    case 'docx': case 'doc': return { Icon: FileText, color: '#2B579A' };
+    case 'hwp': return { Icon: FileBox, color: '#3B82F6' };
+    case 'pdf': return { Icon: FileText, color: '#F40F02' };
+    case 'zip': case 'rar': case '7z': return { Icon: FileArchive, color: '#FCD34D' };
+    case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg': return { Icon: ImageIcon, color: '#A855F7' };
+    case 'js': case 'ts': case 'jsx': case 'tsx': case 'py': case 'html': case 'css': case 'json': return { Icon: FileCode, color: '#0EA5E9' };
+    case 'txt': case 'md': return { Icon: FileText, color: '#9CA3AF' };
+    default: return { Icon: File, color: '#D1D5DB' };
+  }
+};
+
+const getFolderIconColor = (IconComponent: LucideIcon): string => {
+  if (IconComponent === Folder) return '#FBBF24';
+  if (IconComponent === Monitor) return '#60A5FA';
+  if (IconComponent === HardDrive) return '#94A3B8';
+  return '#D0D0D0';
+};
+
+// --- Mock Data ---
+// Base files to be scattered across folders
+const MOCK_BASE_FILES: FileItem[] = [
+  { name: 'Report_Q4.docx', size: '24 KB', date: '2023-10-25', type: 'doc' },
+  { name: 'Design_System.fig', size: '15 MB', date: '2023-10-26', type: 'img' },
+  { name: 'Budget.xlsx', size: '12 KB', date: '2023-10-27', type: 'xls' },
+  { name: 'Notes.txt', size: '2 KB', date: '2023-10-27', type: 'txt' },
+  { name: 'Proposal.pdf', size: '4.5 MB', date: '2023-10-20', type: 'pdf' },
+  { name: 'Logo.png', size: '1.2 MB', date: '2023-10-19', type: 'img' },
+  { name: 'Script.js', size: '4 KB', date: '2023-10-30', type: 'code' },
+];
+
+const MOCK_FOLDERS_INITIAL: FolderNode[] = [
+  { name: '내 PC', icon: 'Monitor', expanded: true, children: [
+    { name: '로컬 디스크 (C:)', icon: 'HardDrive', expanded: true, children: [
+      { name: 'Windows', icon: 'Folder' },
+      { name: 'Program Files', icon: 'Folder' },
+      { name: 'Users', icon: 'Folder', expanded: true, children: [
+        { name: 'Admin', icon: 'Folder', selected: true }
+      ]}
+    ]},
+    { name: '로컬 디스크 (D:)', icon: 'HardDrive' }
+  ]}
+];
+
+const MOCK_INDEX_LOGS: IndexLogEntry[] = [
+  { time: '14:20:01', path: 'C:\\Users\\Admin\\Documents\\Report.docx', status: 'Indexed', size: '24KB' },
+  { time: '14:20:05', path: 'C:\\Users\\Admin\\Pictures\\Photo.jpg', status: 'Skipped', size: '4.2MB' },
+  { time: '14:20:12', path: 'C:\\Windows\\System32\\driver.sys', status: 'Error', size: '0KB' },
+  { time: '14:20:15', path: 'D:\\Backup\\archive.zip', status: 'Indexed', size: '2.5GB' },
+];
+
+const FAVORITES: FavoriteItem[] = [
+  { name: '바탕화면', path: 'C:\\Users\\Admin\\Desktop', icon: Monitor },
+  { name: '문서', path: 'C:\\Users\\Admin\\Documents', icon: Folder },
+  { name: '다운로드', path: 'C:\\Users\\Admin\\Downloads', icon: Folder },
+];
+
+const ICON_MAP: { [key: string]: LucideIcon } = {
+  'Monitor': Monitor, 'HardDrive': HardDrive, 'Folder': Folder
+};
+
+// --- Components ---
+
+const Resizer: React.FC<ResizerProps> = ({ direction, onResize }) => {
+  const [isDragging, setIsDragging] = useState(false);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => isDragging && onResize(direction === 'horizontal' ? e.movementX : e.movementY);
+    const onUp = () => { setIsDragging(false); document.body.style.cursor = 'default'; };
+    if (isDragging) { window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp); document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize'; }
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [isDragging, direction, onResize]);
+  return <div onMouseDown={() => setIsDragging(true)} className={`${direction === 'horizontal' ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize'} hover:bg-[#0067C0] bg-transparent z-50`} />;
+};
+
+const Checkbox: React.FC<CheckboxProps> = ({ id, label, checked, onChange }) => (
+  <label className="flex items-center space-x-2 cursor-pointer select-none group active:opacity-70 transition-opacity" onClick={() => onChange(!checked)}>
+    <div className={`w-4 h-4 border flex items-center justify-center transition-colors ${checked ? 'border-[#777777] bg-[#0067C0]' : 'border-[#777777] bg-transparent'}`}>
+      {checked && <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-none stroke-white stroke-2"><path d="M3 8 L6 11 L13 4" /></svg>}
+    </div>
+    <span className="text-sm text-[#D0D0D0] pt-0.5">{label}</span>
+  </label>
+);
+
+const TreeItem: React.FC<TreeItemProps> = ({ label, IconComponent, expanded, hasChildren, level = 0, isSelected, onClick, onContextMenu, onToggle }) => {
+  const iconColor = getFolderIconColor(IconComponent);
+  return (
+    <div className={`flex items-center py-1 px-2 cursor-pointer text-sm select-none transition-all duration-75 active:scale-[0.99] active:bg-[#333] ${isSelected ? 'bg-[#333333] text-white border border-[#0067C0]' : 'text-[#D0D0D0] hover:bg-[#2C2C2C] border border-transparent'}`} style={{ paddingLeft: `${level * 16 + 8}px` }} onClick={onClick} onContextMenu={onContextMenu}>
+      <div className="w-4 h-4 mr-1 flex items-center justify-center text-[#777] hover:text-white" onClick={(e) => { e.stopPropagation(); onToggle && onToggle(); }}>
+        {hasChildren && (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />)}
+      </div>
+      <IconComponent size={14} className="mr-2" style={{ color: iconColor }} fill={iconColor} fillOpacity={0.2} />
+      <span className="truncate pt-0.5 text-xs">{label}</span>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+export default function App() {
+  // --- Persistent State ---
+  const [layout, setLayout] = useLocalStorage<LayoutState>('layout', { sidebarWidth: 250, fileListWidth: 600, bottomPanelHeight: 200, favoritesHeight: 180, searchLogWidth: 600 });
+  const [colWidths, setColWidths] = useLocalStorage<ColWidthsState>('colWidths', { name: 350, size: 100, date: 150 });
+  const [searchHistory, setSearchHistory] = useLocalStorage<string[]>('searchHistory', ['기획서', '2023년 정산']);
+  const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true, subfolder: true });
+  const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, etc: false });
+  const [folderStructure, setFolderStructure] = useLocalStorage<FolderNode[]>('folderStructure', MOCK_FOLDERS_INITIAL);
+
+  // Tabs (Multi-instance)
+  const [tabs, setTabs] = useLocalStorage<TabItem[]>('tabs', [{ 
+    id: 1, title: '내 PC', searchText: '', selectedFolder: '내 PC', currentPath: 'My Computer', selectedFile: null, 
+    files: [], sortConfig: { key: null, direction: 'asc' }, 
+    history: [{ name: '내 PC', path: 'My Computer' }], historyIndex: 0 
+  }]);
+  const [activeTabId, setActiveTabId] = useLocalStorage<number>('activeTabId', 1);
+  const [nextTabId, setNextTabId] = useLocalStorage<number>('nextTabId', 2);
+
+  // --- Transient State ---
+  const [clipboard, setClipboard] = useState<FileItem | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>({ isOpen: false, item: null });
+  const [showIndexingLog, setShowIndexingLog] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isIndexStopping, setIsIndexStopping] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
+  
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+
+  // Initialize content for default tab if empty
+  useEffect(() => {
+    if (activeTab.files.length === 0 && activeTab.currentPath === 'My Computer') {
+       navigate('내 PC', 'My Computer', true); // Populate initial content
+    }
+  }, []);
+
+  // --- Helpers ---
+  const updateActiveTab = (updates: Partial<TabItem>) => {
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...updates } : t));
+  };
+
+  const addSearchLog = (msg: string) => {
+    setSearchLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  };
+
+  // --- Directory Content Generator (The "Fake" File System) ---
+  const generateDirectoryContent = (folderName: string, path: string): FileItem[] => {
+    // Generate Folders
+    const createFolder = (name: string): FileItem => ({ name, size: '', date: '2023-11-01', type: 'folder', path: `${path}\\${name}` });
+    const createFiles = (): FileItem[] => MOCK_BASE_FILES.map(f => ({ ...f, path: `${path}\\${f.name}` }));
+
+    let content: FileItem[] = [];
+
+    if (folderName === '내 PC' || path === 'My Computer') {
+      // Drives
+      content = [
+        { name: '로컬 디스크 (C:)', size: '', date: '', type: 'folder', path: 'C:' },
+        { name: '로컬 디스크 (D:)', size: '', date: '', type: 'folder', path: 'D:' }
+      ];
+    } else if (folderName.includes('C:')) {
+      content = [createFolder('Windows'), createFolder('Program Files'), createFolder('Users'), { name: 'pagefile.sys', size: '8GB', date: '2023-10-01', type: 'sys', path: 'C:\\pagefile.sys' }];
+    } else if (folderName === 'Users') {
+      content = [createFolder('Admin'), createFolder('Public')];
+    } else if (folderName === 'Admin') {
+      content = [createFolder('Desktop'), createFolder('Documents'), createFolder('Downloads'), createFolder('Pictures'), ...createFiles().slice(0, 2)];
+    } else if (['바탕화면', 'Desktop'].includes(folderName)) {
+      content = [createFolder('Work'), createFolder('Personal'), ...createFiles().slice(0, 3)];
+    } else {
+      // Default: mix of folders and files
+      content = [createFolder('새 폴더'), ...createFiles()];
+    }
+    return content;
+  };
+
+  // --- Navigation & Core Logic ---
+  const navigate = (folderName: string, folderPath: string, isHistoryNav = false) => {
+    const rawContent = generateDirectoryContent(folderName, folderPath);
+    
+    // Sort: Folders first, then files
+    rawContent.sort((a, b) => {
+      if (a.type === 'folder' && b.type !== 'folder') return -1;
+      if (a.type !== 'folder' && b.type === 'folder') return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    let newHistory = activeTab.history;
+    let newIndex = activeTab.historyIndex;
+
+    if (!isHistoryNav) {
+      newHistory = activeTab.history.slice(0, activeTab.historyIndex + 1);
+      newHistory.push({ name: folderName, path: folderPath });
+      newIndex = newHistory.length - 1;
+    }
+
+    updateActiveTab({ 
+      selectedFolder: folderName, 
+      currentPath: folderPath,
+      title: folderName,
+      files: rawContent,
+      selectedFile: null,
+      searchText: '',
+      history: newHistory,
+      historyIndex: newIndex
+    });
+
+    // Don't log if it's just initialization
+    if (folderName !== activeTab.selectedFolder) {
+      addSearchLog(isHistoryNav ? `탐색(히스토리): ${folderName}` : `디렉토리 이동: ${folderPath}`);
+    }
+  };
+
+  const handleBack = () => {
+    if (activeTab.historyIndex > 0) {
+      const prev = activeTab.history[activeTab.historyIndex - 1];
+      navigate(prev.name, prev.path, true);
+    }
+  };
+
+  const handleForward = () => {
+    if (activeTab.historyIndex < activeTab.history.length - 1) {
+      const next = activeTab.history[activeTab.historyIndex + 1];
+      navigate(next.name, next.path, true);
+    }
+  };
+
+  // --- File Actions ---
+  const handleNewFolder = () => {
+    const base = "새 폴더";
+    let name = base;
+    let i = 2;
+    while (activeTab.files.some(f => f.name === name)) name = `${base} (${i++})`;
+    
+    const newFolder: FileItem = { name, size: '', date: new Date().toLocaleDateString(), type: 'folder', path: `${activeTab.currentPath}\\${name}` };
+    const newFiles = [newFolder, ...activeTab.files].sort((a, b) => (a.type === 'folder' && b.type !== 'folder' ? -1 : 1));
+    updateActiveTab({ files: newFiles });
+    addSearchLog(`새 폴더 생성: ${name}`);
+  };
+
+  const handleCopy = () => {
+    if (activeTab.selectedFile) {
+      setClipboard(activeTab.selectedFile);
+      addSearchLog(`클립보드 복사: ${activeTab.selectedFile.name}`);
+    }
+  };
+
+  const handlePaste = () => {
+    if (!clipboard) return;
+    let name = clipboard.name;
+    let i = 2;
+    // Simple dedupe for same directory paste
+    while (activeTab.files.some(f => f.name === name)) {
+      const parts = clipboard.name.split('.');
+      if (clipboard.type !== 'folder' && parts.length > 1) {
+        const ext = parts.pop();
+        name = `${parts.join('.')} - 복사본 (${i++}).${ext}`;
+      } else {
+        name = `${clipboard.name} - 복사본 (${i++})`;
+      }
+    }
+    const newFile = { ...clipboard, name, date: new Date().toLocaleDateString() };
+    const newFiles = [newFile, ...activeTab.files].sort((a, b) => (a.type === 'folder' && b.type !== 'folder' ? -1 : 1));
+    updateActiveTab({ files: newFiles });
+    addSearchLog(`붙여넣기: ${name}`);
+  };
+
+  const handleRename = () => {
+    if (!activeTab.selectedFile) return;
+    const oldName = activeTab.selectedFile.name;
+    const newName = prompt("새 이름을 입력하세요:", oldName);
+    if (newName && newName !== oldName) {
+      const updatedFiles = activeTab.files.map(f => f.name === oldName ? { ...f, name: newName } : f);
+      updateActiveTab({ files: updatedFiles, selectedFile: { ...activeTab.selectedFile, name: newName } });
+      addSearchLog(`이름 변경: ${oldName} -> ${newName}`);
+    }
+  };
+
+  const handleDelete = () => {
+    if (!activeTab.selectedFile) return;
+    setDeleteDialog({ isOpen: true, item: activeTab.selectedFile });
+  };
+
+  const confirmDelete = () => {
+    if (deleteDialog.item) {
+      const newFiles = activeTab.files.filter(f => f.name !== deleteDialog.item?.name);
+      updateActiveTab({ files: newFiles, selectedFile: null });
+      addSearchLog(`삭제됨: ${deleteDialog.item.name}`);
+      setDeleteDialog({ isOpen: false, item: null });
+    }
+  };
+
+  // --- Sort & Search ---
+  const handleSort = (key: keyof FileItem) => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (activeTab.sortConfig.key === key && activeTab.sortConfig.direction === 'asc') direction = 'desc';
+    
+    const sorted = [...activeTab.files].sort((a, b) => {
+      // Always keep folders on top
+      if (a.type === 'folder' && b.type !== 'folder') return -1;
+      if (a.type !== 'folder' && b.type === 'folder') return 1;
+
+      if (key === 'size') {
+        const valA = parseFloat(a.size) || 0;
+        const valB = parseFloat(b.size) || 0; // Simple mock parse
+        return (valA - valB) * (direction === 'asc' ? 1 : -1);
+      }
+      return (a[key]?.toString() || '').localeCompare(b[key]?.toString() || '') * (direction === 'asc' ? 1 : -1);
+    });
+    updateActiveTab({ files: sorted, sortConfig: { key, direction } });
+  };
+
+  const handleSearch = () => {
+    if (isSearching) return;
+    setIsSearching(true);
+    addSearchLog(`검색 시작: "${activeTab.searchText}"`);
+    if (activeTab.searchText) {
+      setSearchHistory(prev => [activeTab.searchText, ...prev.filter(t => t !== activeTab.searchText)].slice(0, 10));
+    }
+    setTimeout(() => {
+      setIsSearching(false);
+      // Mock filter
+      if (activeTab.searchText) {
+        const filtered = MOCK_BASE_FILES.filter(f => f.name.toLowerCase().includes(activeTab.searchText.toLowerCase()));
+        updateActiveTab({ files: filtered });
+        addSearchLog(`검색 완료: ${filtered.length}건 발견`);
+      }
+    }, 2000);
+  };
+
+  // --- Render Helpers ---
+  const renderTree = (nodes: FolderNode[], level = 0, parentPath = "C:\\Users\\Admin") => {
+    return nodes.map((node, idx) => {
+      // Mock path construction
+      let currentPath = `${parentPath}\\${node.name}`;
+      if (node.name.includes("(:)")) { const match = node.name.match(/\((.*?)\)/); if (match) currentPath = match[1] + "\\"; } 
+      else if (node.name === "내 PC") currentPath = "My Computer";
+
+      const IconComp = ICON_MAP[node.icon] || Folder;
+      return (
+        <div key={idx}>
+          <TreeItem 
+            label={node.name} IconComponent={IconComp} expanded={node.expanded} hasChildren={!!node.children} level={level}
+            isSelected={activeTab.selectedFolder === node.name}
+            onClick={() => navigate(node.name, currentPath)}
+            onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: node.name, path: currentPath, type: 'folder' } }); }}
+            onToggle={() => {
+              const toggle = (list: FolderNode[]): FolderNode[] => list.map(n => n === node ? { ...n, expanded: !n.expanded } : { ...n, children: n.children ? toggle(n.children) : undefined });
+              setFolderStructure(toggle(folderStructure));
+            }}
+          />
+          {node.expanded && node.children && renderTree(node.children, level + 1, currentPath)}
+        </div>
+      );
+    });
+  };
+
+  // --- Context Menu Close ---
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(p => ({ ...p, visible: false }));
+    window.addEventListener('click', closeMenu);
+    return () => window.removeEventListener('click', closeMenu);
+  }, []);
+
+  const canGoBack = activeTab.historyIndex > 0;
+  const canGoForward = activeTab.historyIndex < activeTab.history.length - 1;
+  const hasSelection = !!activeTab.selectedFile;
+
+  return (
+    <div className="flex flex-col h-screen w-full font-sans overflow-hidden select-none text-[12px]" style={{ backgroundColor: COLORS.windowBg, color: COLORS.textPrimary }}>
+      <style>{`
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: ${COLORS.scrollbarTrack}; }
+        ::-webkit-scrollbar-thumb { background: ${COLORS.scrollbarThumb}; border-radius: 5px; border: 2px solid ${COLORS.scrollbarTrack}; }
+        ::-webkit-scrollbar-thumb:hover { background: ${COLORS.scrollbarThumbHover}; }
+      `}</style>
+
+      {/* --- Delete Dialog --- */}
+      {deleteDialog.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-[320px] bg-[#202020] border border-[#444] rounded-lg shadow-2xl p-4 transform scale-100">
+            <div className="flex gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center shrink-0">
+                <AlertTriangle className="text-red-500" size={20} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">삭제 확인</h3>
+                <p className="text-xs text-gray-400 mt-1">'{deleteDialog.item?.name}' 항목을 영구적으로 삭제하시겠습니까?</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDeleteDialog({ isOpen: false, item: null })} className="px-4 py-1.5 bg-[#333] hover:bg-[#444] rounded border border-[#555] text-white transition-colors active:scale-95 duration-100">취소</button>
+              <button onClick={confirmDelete} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-white transition-colors active:scale-95 duration-100">삭제</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- Context Menu --- */}
+      {contextMenu.visible && contextMenu.target && (
+        <div className="fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
+          <div className="px-3 py-2 text-xs text-gray-500 border-b border-[#444] mb-1 truncate max-w-[250px]">{contextMenu.target.path}</div>
+          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.path); addSearchLog('경로 복사됨'); }}>
+            <Copy size={14} className="text-gray-400 group-hover:text-white" /> 경로 복사
+          </button>
+          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.name); addSearchLog('이름 복사됨'); }}>
+            <FileText size={14} className="text-gray-400 group-hover:text-white" /> 이름 복사
+          </button>
+        </div>
+      )}
+
+      {/* --- Tab Bar --- */}
+      <div className="flex items-end h-[40px] px-2 pt-2 space-x-1 shrink-0 bg-[#121212] border-b border-[#2C2C2C]">
+        {tabs.map(tab => (
+          <div key={tab.id} onClick={() => setActiveTabId(tab.id)} className={`group relative flex items-center min-w-[150px] max-w-[240px] h-full px-3 rounded-t-lg cursor-pointer transition-colors border-t border-x ${tab.id === activeTabId ? 'bg-[#202020] text-white border-[#333] border-b-0 z-10' : 'bg-transparent text-[#AAA] hover:bg-[#1F1F1F] border-transparent hover:border-[#333] active:bg-[#252525]'}`}>
+            <Folder size={14} className="mr-2 text-[#FBBF24]" fill="#FBBF24" fillOpacity={0.2} />
+            <span className="truncate flex-1 mr-2 text-xs">{tab.title}</span>
+            <div onClick={(e) => { e.stopPropagation(); if(tabs.length > 1) { const remain = tabs.filter(t=>t.id!==tab.id); setTabs(remain); if(tab.id===activeTabId) setActiveTabId(remain[remain.length-1].id); }}} className="p-0.5 rounded hover:bg-[#333] hover:text-red-400 opacity-0 group-hover:opacity-100 active:scale-90 transition-transform duration-100"><X size={12} /></div>
+          </div>
+        ))}
+        <button onClick={() => { const id = nextTabId; setTabs([...tabs, { id, title: '내 PC', searchText: '', selectedFolder: '내 PC', currentPath: 'My Computer', selectedFile: null, files: [], sortConfig: {key:null, direction:'asc'}, history: [{name:'내 PC', path:'My Computer'}], historyIndex: 0 }]); setNextTabId(id+1); setActiveTabId(id); }} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
+        <div className="flex-1 h-full" style={{ WebkitAppRegion: 'drag' } as any}></div>
+      </div>
+
+      {/* --- Top Container --- */}
+      <div className="flex flex-col border-b h-[110px] shrink-0 bg-[#202020] border-[#444]">
+        {/* Row 1: Search */}
+        <div className="flex items-center p-3 space-x-3">
+          <div className="relative w-[300px] z-50">
+            <input 
+              type="text" 
+              placeholder="검색어를 입력하세요..." 
+              className="w-full h-8 px-2 pl-3 bg-[#2C2C2C] border border-[#444] text-white focus:outline-none focus:border-[#0067C0] rounded-sm placeholder-gray-500"
+              value={activeTab.searchText}
+              onChange={(e) => updateActiveTab({ searchText: e.target.value })}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              onFocus={() => setIsHistoryOpen(true)}
+              onBlur={() => setTimeout(() => setIsHistoryOpen(false), 200)}
+            />
+            {isHistoryOpen && searchHistory.length > 0 && (
+              <div className="absolute top-full left-0 w-full mt-1 bg-[#2D2D2D] border border-[#444] shadow-xl z-50 max-h-60 overflow-y-auto rounded-sm">
+                {searchHistory.map((term, i) => (
+                  <div key={i} className="flex justify-between px-3 py-2 hover:bg-[#0067C0] hover:text-white cursor-pointer group active:bg-[#005a9e]" onMouseDown={() => updateActiveTab({ searchText: term })}>
+                    <span className="flex items-center gap-2 text-[#D0D0D0] group-hover:text-white"><Clock size={12}/> {term}</span>
+                    <X size={12} className="text-gray-500 hover:text-red-300 active:scale-90" onMouseDown={(e) => { e.stopPropagation(); setSearchHistory(h => h.filter(t => t !== term)); }}/>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={handleSearch} disabled={isSearching} className={`flex items-center px-4 py-1.5 text-white transition-transform duration-100 border border-[#005A9E] rounded-sm active:scale-95 ${isSearching ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
+            {isSearching ? <Activity size={14} className="animate-spin mr-1"/> : <Play size={14} className="mr-1" fill="currentColor"/>} 검색
+          </button>
+          <button onClick={() => { setIsSearching(false); addSearchLog('검색 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 transition-transform duration-100">
+            <Square size={14} className="mr-1" fill="currentColor"/> 중지
+          </button>
+          <div className="w-4" />
+          <Checkbox id="opt_content" label="내용 포함" checked={searchOptions.content} onChange={(v) => setSearchOptions(p => ({...p, content: v}))} />
+          <Checkbox id="opt_sub" label="하위 폴더" checked={searchOptions.subfolder} onChange={(v) => setSearchOptions(p => ({...p, subfolder: v}))} />
+        </div>
+
+        {/* Row 2: Indexing & Filters */}
+        <div className="flex items-center px-3 pb-3 space-x-3 justify-between">
+          <div className="flex items-center space-x-3">
+            <span className="font-bold text-[#D0D0D0]">색인:</span>
+            <button disabled={isIndexStopping} className="flex items-center px-4 py-1.5 text-white border border-[#005A9E] bg-[#0067C0] hover:bg-[#0078D7] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100"><Play size={14} className="mr-1" fill="currentColor"/> 시작</button>
+            <button onClick={() => { setIsIndexStopping(true); setTimeout(() => setIsIndexStopping(false), 500); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 active:bg-[#1a1a1a] transition-all duration-100"><Pause size={14} className="mr-1" fill="currentColor"/> 중지</button>
+            <span className="text-gray-500 px-2">대기 중...</span>
+            <span className="text-[#D0D0D0]">누적: 1,204 개</span>
+          </div>
+          <div className="flex space-x-4">
+            {['ppt', 'doc', 'hwp', 'txt', 'pdf'].map(ext => (
+              <Checkbox key={ext} id={`filter_${ext}`} label={ext} checked={typeFilters[ext]} onChange={(v) => setTypeFilters(p => ({...p, [ext]: v}))} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* --- Center Wrapper --- */}
+      <div className="flex flex-col flex-grow overflow-hidden relative">
+        <div className="flex flex-row flex-grow overflow-hidden" style={{ height: `calc(100% - ${layout.bottomPanelHeight}px)` }}>
+          
+          {/* Sidebar */}
+          <div style={{ width: layout.sidebarWidth }} className="flex flex-col border-r border-[#444] bg-[#202020]">
+            {/* Toolbar */}
+            <div className="flex items-center p-1 space-x-1 border-b border-[#444] h-[36px] select-none">
+              <div className="flex items-center space-x-0.5">
+                <button onClick={handleBack} disabled={!canGoBack} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 active:bg-[#444] ${canGoBack ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="뒤로"><ArrowLeft size={16}/></button>
+                <button onClick={handleForward} disabled={!canGoForward} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 active:bg-[#444] ${canGoForward ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="앞으로"><ArrowRight size={16}/></button>
+              </div>
+              <div className="w-px h-4 bg-[#444] mx-2" />
+              <div className="flex items-center space-x-0.5">
+                <button onClick={handleNewFolder} className="p-1.5 text-[#D0D0D0] rounded hover:bg-[#333] active:bg-[#444] active:scale-95 transition-transform duration-100" title="새 폴더"><FolderPlus size={16}/></button>
+                <button onClick={handleCopy} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="복사"><Copy size={16}/></button>
+                <button onClick={handleRename} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="이름 변경"><Edit2 size={16}/></button>
+                <button onClick={handleDelete} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333] hover:text-red-400' : 'text-[#555]'}`} title="삭제"><Trash2 size={16}/></button>
+                <button onClick={handlePaste} disabled={!clipboard} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${clipboard ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="붙여넣기"><Clipboard size={16}/></button>
+              </div>
+            </div>
+
+            {/* Tree Area */}
+            <div className="flex-1 overflow-y-auto">
+              {/* Favorites */}
+              <div className="mb-2">
+                <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
+                  <Star size={12} className="mr-1.5 text-[#A855F7]" fill="#A855F7"/> 즐겨찾기
+                </div>
+                <div>{FAVORITES.map((fav, i) => <TreeItem key={i} label={fav.name} IconComponent={fav.icon} isSelected={activeTab.selectedFolder === fav.name} onClick={() => navigate(fav.name, fav.path)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: fav.name, path: fav.path, type: 'folder' } }); }} />)}</div>
+              </div>
+              
+              {/* Folder Tree */}
+              <div>
+                <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
+                  <Folder size={12} className="mr-1.5 text-[#FBBF24]" fill="#FBBF24"/> 폴더 트리
+                </div>
+                <div>{renderTree(folderStructure)}</div>
+              </div>
+            </div>
+          </div>
+          <Resizer direction="horizontal" onResize={(d) => setLayout(p => ({ ...p, sidebarWidth: Math.max(150, p.sidebarWidth + d) }))} />
+
+          {/* File List */}
+          <div style={{ width: layout.fileListWidth }} className="flex flex-col border-r border-[#444] bg-[#202020]">
+            {/* Header */}
+            <div className="flex h-8 bg-[#202020] border-b border-[#444] text-[#D0D0D0]">
+              <div style={{ width: colWidths.name }} className="pl-3 flex items-center hover:bg-[#333] cursor-pointer text-xs" onClick={() => handleSort('name')}>이름 {activeTab.sortConfig.key === 'name' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <Resizer direction="horizontal" onResize={(d) => setColWidths(p => ({ ...p, name: Math.max(50, p.name + d) }))} />
+              <div style={{ width: colWidths.size }} className="px-2 flex items-center justify-end hover:bg-[#333] cursor-pointer text-xs" onClick={() => handleSort('size')}>크기 {activeTab.sortConfig.key === 'size' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <Resizer direction="horizontal" onResize={(d) => setColWidths(p => ({ ...p, size: Math.max(50, p.size + d) }))} />
+              <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+            </div>
+            {/* List */}
+            <div className="flex-1 overflow-y-auto" onClick={() => updateActiveTab({ selectedFile: null })}>
+              <div className="min-w-max">
+                {activeTab.files.map((file, i) => {
+                  const { Icon: FileIcon, color: iconColor } = getFileIconProps(file);
+                  const isSelected = activeTab.selectedFile?.name === file.name;
+                  return (
+                    <div 
+                      key={i} 
+                      // 수평선(border-b) 제거
+                      className={`flex h-7 items-center cursor-default text-xs active:bg-[#383838] transition-colors duration-75 ${isSelected ? 'bg-[#333] text-white' : 'text-[#D0D0D0] hover:bg-[#2A2A2A]'}`}
+                      onClick={(e) => { e.stopPropagation(); updateActiveTab({ selectedFile: file }); }}
+                      onDoubleClick={() => file.type === 'folder' ? navigate(file.name, file.path || `...\\${file.name}`) : addSearchLog(`파일 열기: ${file.name}`)}
+                      onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: file.name, path: file.path || '', type: file.type } }); }}
+                    >
+                      <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden">
+                        <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
+                        <span className="truncate">{file.name}</span>
+                      </div>
+                      
+                      {/* 수직선: 점선(dashed)으로 변경하고 투명도(opacity)를 주어 희미하게 처리 */}
+                      <div className="w-0 h-full border-l border-dashed border-[#555] opacity-30 mx-0" />
+                      
+                      <div style={{ width: colWidths.size }} className="px-2 text-right text-gray-400">{file.size}</div>
+                      
+                      {/* 수직선: 점선(dashed)으로 변경하고 투명도(opacity)를 주어 희미하게 처리 */}
+                      <div className="w-0 h-full border-l border-dashed border-[#555] opacity-30 mx-0" />
+                      
+                      <div style={{ width: colWidths.date }} className="px-2 text-gray-400">{file.date}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <Resizer direction="horizontal" onResize={(d) => setLayout(p => ({ ...p, fileListWidth: Math.max(200, p.fileListWidth + d) }))} />
+
+          {/* Right Panel (Preview) */}
+          <div className="flex-1 flex flex-col bg-[#202020] min-w-[200px]">
+            <div className="h-8 border-b border-[#444] bg-[#252525] flex items-center justify-between px-3">
+              <span className="text-xs font-bold text-[#D0D0D0]">{showIndexingLog ? '인덱싱 DB 내역' : '내용 보기 및 편집'}</span>
+              <button 
+                onClick={() => setShowIndexingLog(!showIndexingLog)} 
+                className="flex items-center gap-1 text-[11px] px-2 py-0.5 border border-[#444] rounded bg-[#333] text-gray-300 hover:text-white hover:bg-[#444] active:scale-95 transition-transform duration-100"
+              >
+                {showIndexingLog ? <FileText size={10}/> : <List size={10}/>}
+                {showIndexingLog ? '미리보기' : '인덱싱 보기'}
+              </button>
+            </div>
+            <div className="flex-1 p-4 overflow-auto text-[#D0D0D0] text-xs font-mono">
+              {showIndexingLog ? (
+                <div className="space-y-1">
+                  {MOCK_INDEX_LOGS.map((log, i) => (
+                    <div key={i} className="flex gap-2 border-b border-[#333] pb-1">
+                      <span className="text-gray-500">[{log.time}]</span>
+                      <span className={log.status === 'Error' ? 'text-red-400' : 'text-green-400'}>{log.status}</span>
+                      <span className="truncate">{log.path}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                activeTab.selectedFile ? (
+                  <div className="h-full">
+                    <div className="p-3 bg-[#151515] border border-[#333] rounded h-full">
+                      {activeTab.selectedFile.type === 'folder' ? '폴더 내용 미리보기 불가' : '파일 내용이 여기에 표시됩니다...'}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-gray-600">선택된 파일 없음</div>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+        <Resizer direction="vertical" onResize={(d) => setLayout(p => ({ ...p, bottomPanelHeight: Math.max(50, p.bottomPanelHeight - d) }))} />
+
+        {/* --- Bottom Panel --- */}
+        <div style={{ height: layout.bottomPanelHeight }} className="flex bg-[#202020] border-t border-[#444]">
+          <div style={{ width: layout.searchLogWidth }} className="flex flex-col border-r border-[#444]">
+            <div className="px-2 py-1 text-xs font-bold text-[#AAA] bg-[#252525] border-b border-[#444]">Search Log</div>
+            <div className="flex-1 p-2 overflow-y-auto font-mono text-xs text-[#D0D0D0] space-y-0.5">
+              {searchLog.map((log, i) => <div key={i} className="flex items-center gap-1">{i===0 && <Search size={12}/>}{log}</div>)}
+            </div>
+          </div>
+          <Resizer direction="horizontal" onResize={(d) => setLayout(p => ({ ...p, searchLogWidth: Math.max(100, p.searchLogWidth + d) }))} />
+          <div className="flex flex-col flex-1">
+            <div className="px-2 py-1 text-xs font-bold text-[#AAA] bg-[#252525] border-b border-[#444]">Indexing Log</div>
+            <div className="flex-1 p-2 font-mono text-xs text-[#AAA]">📑 인덱싱 대기 중...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
