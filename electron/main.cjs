@@ -63,7 +63,61 @@ app.on('window-all-closed', () => {
   }
 });
 
-// 파일 시스템 접근 IPC 핸들러들 (추후 확장 가능)
+// 파일 시스템 접근 IPC 핸들러들
+ipcMain.handle('get-drives', async () => {
+  const fs = require('fs');
+  
+  try {
+    if (process.platform === 'win32') {
+      // Windows: A-Z 드라이브를 순회하며 존재하는 드라이브 찾기
+      const drives = [];
+      for (let i = 65; i <= 90; i++) { // A-Z
+        const driveLetter = String.fromCharCode(i);
+        const drivePath = `${driveLetter}:\\`;
+        try {
+          // 드라이브 존재 여부 확인
+          if (fs.existsSync(drivePath)) {
+            drives.push({
+              name: `로컬 디스크 (${driveLetter}:)`,
+              path: drivePath
+            });
+          }
+        } catch (err) {
+          // 접근 불가능한 드라이브는 무시
+        }
+      }
+      return drives.length > 0 ? drives : [
+        { name: '로컬 디스크 (C:)', path: 'C:\\' }
+      ];
+    }
+  } catch (error) {
+    console.error('Error getting drives:', error);
+  }
+  
+  // 기본값 반환
+  return [
+    { name: '로컬 디스크 (C:)', path: 'C:\\' }
+  ];
+});
+
+ipcMain.handle('read-directories-only', async (event, dirPath) => {
+  const fs = require('fs').promises;
+  try {
+    const files = await fs.readdir(dirPath, { withFileTypes: true });
+    // 폴더만 필터링하고 특수 문자로 시작하는 폴더 제외
+    return files
+      .filter(file => file.isDirectory())
+      .filter(file => /^[a-zA-Z0-9가-힣]/.test(file.name))
+      .map(file => ({
+        name: file.name,
+        path: path.join(dirPath, file.name)
+      }));
+  } catch (error) {
+    console.error('Error reading directories:', error);
+    return [];
+  }
+});
+
 ipcMain.handle('read-directory', async (event, dirPath) => {
   const fs = require('fs').promises;
   try {

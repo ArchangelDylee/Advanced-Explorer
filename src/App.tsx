@@ -21,9 +21,11 @@ interface FileItem {
 interface FolderNode {
   name: string;
   icon: string;
+  path?: string; // 실제 파일 시스템 경로
   expanded?: boolean;
   selected?: boolean;
   children?: FolderNode[];
+  childrenLoaded?: boolean; // 하위 폴더를 로드했는지 여부
 }
 
 interface FavoriteItem {
@@ -225,25 +227,16 @@ const MOCK_BASE_FILES: FileItem[] = [
   { name: 'Script.js', size: '4 KB', date: '2023-10-30', type: 'code' },
 ];
 
+// 초기 폴더 구조 (드라이브는 동적으로 로드됨)
 const MOCK_FOLDERS_INITIAL: FolderNode[] = [
-  { name: '내 PC', icon: 'Monitor', expanded: true, children: [
-    { name: '로컬 디스크 (C:)', icon: 'HardDrive', expanded: true, children: [
-      { name: 'Windows', icon: 'Folder' },
-      { name: 'Program Files', icon: 'Folder' },
-      { name: 'Program Files (x86)', icon: 'Folder' },
-      { name: 'Users', icon: 'Folder', expanded: true, children: [
-        { name: 'dylee', icon: 'Folder', selected: true, expanded: true, children: [
-          { name: '문서', icon: 'Folder' },
-          { name: '바탕화면', icon: 'Folder' },
-          { name: '다운로드', icon: 'Folder' },
-          { name: '사진', icon: 'Folder' },
-          { name: '음악', icon: 'Folder' }
-        ]},
-        { name: 'Public', icon: 'Folder' }
-      ]}
-    ]},
-    { name: '로컬 디스크 (D:)', icon: 'HardDrive' }
-  ]}
+  { 
+    name: '내 PC', 
+    icon: 'Monitor', 
+    path: 'My Computer',
+    expanded: true, 
+    children: [],
+    childrenLoaded: false
+  }
 ];
 
 const MOCK_INDEX_LOGS: IndexLogEntry[] = [
@@ -340,6 +333,83 @@ export default function App() {
   
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+
+  // Initialize drives and folder structure
+  useEffect(() => {
+    const initializeDrives = async () => {
+      if (typeof window !== 'undefined' && (window as any).electronAPI) {
+        try {
+          const electronAPI = (window as any).electronAPI;
+          const drives = await electronAPI.getDrives();
+          
+          // 드라이브별로 루트 폴더를 재귀적으로 로드 (2-3 레벨까지)
+          const driveNodes: FolderNode[] = await Promise.all(
+            drives.map(async (drive: any) => {
+              const rootDirs = await electronAPI.readDirectoriesOnly(drive.path);
+              
+              // C:\ 드라이브만 추가로 하위 폴더 로드
+              const rootChildren = await Promise.all(
+                rootDirs.map(async (dir: any) => {
+                  if (drive.path === 'C:\\' && (dir.name === 'Users')) {
+                    // Users 폴더는 하위까지 로드
+                    const userDirs = await electronAPI.readDirectoriesOnly(dir.path);
+                    return {
+                      name: dir.name,
+                      icon: 'Folder',
+                      path: dir.path,
+                      expanded: true,
+                      children: userDirs.map((userDir: any) => ({
+                        name: userDir.name,
+                        icon: 'Folder',
+                        path: userDir.path,
+                        expanded: false,
+                        children: [],
+                        childrenLoaded: false
+                      })),
+                      childrenLoaded: true
+                    };
+                  }
+                  
+                  return {
+                    name: dir.name,
+                    icon: 'Folder',
+                    path: dir.path,
+                    expanded: false,
+                    children: [],
+                    childrenLoaded: false
+                  };
+                })
+              );
+              
+              return {
+                name: drive.name,
+                icon: 'HardDrive',
+                path: drive.path,
+                expanded: true, // 모든 드라이브 펼침
+                children: rootChildren,
+                childrenLoaded: true
+              };
+            })
+          );
+          
+          setFolderStructure([{
+            name: '내 PC',
+            icon: 'Monitor',
+            path: 'My Computer',
+            expanded: true, // 내 PC 펼침
+            children: driveNodes,
+            childrenLoaded: true
+          }]);
+          
+          addSearchLog('드라이브 및 폴더 구조 로드 완료');
+        } catch (error) {
+          console.error('Error initializing drives:', error);
+        }
+      }
+    };
+    
+    initializeDrives();
+  }, []);
 
   // Initialize content for default tab if empty
   useEffect(() => {
@@ -583,29 +653,87 @@ export default function App() {
   };
 
   // --- Render Helpers ---
-  const renderTree = (nodes: FolderNode[], level = 0, parentPath = "C:\\Users\\Admin") => {
+  // 폴더 확장 시 하위 디렉토리 동적 로드
+  const loadSubfolders = async (node: FolderNode) => {
+    if (node.childrenLoaded || !node.path) return;
+    
+    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+      try {
+        const electronAPI = (window as any).electronAPI;
+        const subdirs = await electronAPI.readDirectoriesOnly(node.path);
+        
+        const updateNode = (list: FolderNode[]): FolderNode[] => 
+          list.map(n => {
+            if (n === node) {
+              return {
+                ...n,
+                children: subdirs.map((dir: any) => ({
+                  name: dir.name,
+                  icon: 'Folder',
+                  path: dir.path,
+                  expanded: false,
+                  children: [],
+                  childrenLoaded: false
+                })),
+                childrenLoaded: true,
+                expanded: true
+              };
+            }
+            if (n.children) {
+              return { ...n, children: updateNode(n.children) };
+            }
+            return n;
+          });
+        
+        setFolderStructure(updateNode(folderStructure));
+      } catch (error) {
+        console.error('Error loading subfolders:', error);
+      }
+    }
+  };
+
+  const renderTree = (nodes: FolderNode[], level = 0) => {
     const isValidName = (name: string) => /^[a-zA-Z0-9가-힣]/.test(name);
     
     return nodes.filter(node => isValidName(node.name)).map((node, idx) => {
-      // Mock path construction
-      let currentPath = `${parentPath}\\${node.name}`;
-      if (node.name.includes("(:)")) { const match = node.name.match(/\((.*?)\)/); if (match) currentPath = match[1] + "\\"; } 
-      else if (node.name === "내 PC") currentPath = "My Computer";
+      // 경로는 노드에 저장된 path 사용
+      const currentPath = node.path || node.name;
 
       const IconComp = ICON_MAP[node.icon] || Folder;
+      const hasChildren = node.children && node.children.length > 0;
+      
       return (
         <div key={idx}>
           <TreeItem 
-            label={node.name} IconComponent={IconComp} expanded={node.expanded} hasChildren={!!node.children} level={level}
+            label={node.name} 
+            IconComponent={IconComp} 
+            expanded={node.expanded} 
+            hasChildren={hasChildren || !node.childrenLoaded} 
+            level={level}
             isSelected={activeTab.selectedFolder === node.name}
             onClick={() => navigate(node.name, currentPath)}
-            onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: node.name, path: currentPath, type: 'folder' } }); }}
-            onToggle={() => {
-              const toggle = (list: FolderNode[]): FolderNode[] => list.map(n => n === node ? { ...n, expanded: !n.expanded } : { ...n, children: n.children ? toggle(n.children) : undefined });
-              setFolderStructure(toggle(folderStructure));
+            onContextMenu={(e) => { 
+              e.preventDefault(); 
+              setContextMenu({ 
+                visible: true, 
+                x: e.clientX, 
+                y: e.clientY, 
+                target: { name: node.name, path: currentPath, type: 'folder' } 
+              }); 
+            }}
+            onToggle={async () => {
+              if (!node.expanded && !node.childrenLoaded) {
+                // 확장하면서 하위 폴더 로드
+                await loadSubfolders(node);
+              } else {
+                // 단순 토글
+                const toggle = (list: FolderNode[]): FolderNode[] => 
+                  list.map(n => n === node ? { ...n, expanded: !n.expanded } : { ...n, children: n.children ? toggle(n.children) : undefined });
+                setFolderStructure(toggle(folderStructure));
+              }
             }}
           />
-          {node.expanded && node.children && renderTree(node.children, level + 1, currentPath)}
+          {node.expanded && node.children && renderTree(node.children, level + 1)}
         </div>
       );
     });
@@ -704,11 +832,11 @@ export default function App() {
               </div>
             )}
           </div>
-          {/* Search Button without animation */}
-          <button onClick={handleSearch} disabled={isSearching} className={`flex items-center px-4 py-1.5 text-white border border-[#005A9E] rounded-sm ${isSearching ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
+          {/* Search Button with click effect */}
+          <button onClick={handleSearch} disabled={isSearching} className={`flex items-center px-4 py-1.5 text-white border border-[#005A9E] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100 ${isSearching ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
             {isSearching ? <Activity size={14} className="animate-spin mr-1"/> : <Play size={14} className="mr-1" fill="currentColor"/>} 검색
           </button>
-          <button onClick={() => { setIsSearching(false); addSearchLog('검색 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm">
+          <button onClick={() => { setIsSearching(false); addSearchLog('검색 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 transition-all duration-100">
             <Square size={14} className="mr-1" fill="currentColor"/> 중지
           </button>
           <div className="w-4" />
