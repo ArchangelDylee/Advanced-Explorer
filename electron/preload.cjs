@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readDirectoriesOnly: (dirPath) => ipcRenderer.invoke('read-directories-only', dirPath),
   readDirectory: (dirPath) => ipcRenderer.invoke('read-directory', dirPath),
   getFileStats: (filePath) => ipcRenderer.invoke('get-file-stats', filePath),
+  readImageFile: (filePath) => ipcRenderer.invoke('read-image-file', filePath),
   platform: process.platform,
   isElectron: true
 });

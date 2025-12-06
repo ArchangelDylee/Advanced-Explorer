@@ -327,6 +327,7 @@ export default function App() {
   const [showIndexingLog, setShowIndexingLog] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
@@ -421,6 +422,41 @@ export default function App() {
        navigate(activeTab.selectedFolder, activeTab.currentPath, true); // Populate initial content
     }
   }, []);
+
+  // Load image preview when file is selected
+  useEffect(() => {
+    const loadImagePreview = async () => {
+      if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
+        const ext = activeTab.selectedFile.type.toLowerCase();
+        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico'];
+        
+        if (imageExtensions.includes(ext)) {
+          // 이미지 파일 - 미리보기 로드
+          if (typeof window !== 'undefined' && (window as any).electronAPI) {
+            try {
+              const electronAPI = (window as any).electronAPI;
+              const result = await electronAPI.readImageFile(activeTab.selectedFile.path);
+              
+              if (result.success) {
+                setImagePreview(result.dataUrl);
+              } else {
+                setImagePreview(null);
+              }
+            } catch (error) {
+              console.error('이미지 로드 오류:', error);
+              setImagePreview(null);
+            }
+          }
+        } else {
+          setImagePreview(null);
+        }
+      } else {
+        setImagePreview(null);
+      }
+    };
+    
+    loadImagePreview();
+  }, [activeTab.selectedFile]);
 
   // --- Helpers ---
   const updateActiveTab = (updates: Partial<TabItem>) => {
@@ -994,9 +1030,40 @@ export default function App() {
               ) : (
                 activeTab.selectedFile ? (
                   <div className="h-full">
-                    <div className="p-3 bg-[#151515] border border-[#333] rounded h-full">
-                      {activeTab.selectedFile.type === 'folder' ? '폴더 내용 미리보기 불가' : '파일 내용이 여기에 표시됩니다...'}
-                    </div>
+                    {activeTab.selectedFile.type === 'folder' ? (
+                      <div className="p-3 bg-[#151515] border border-[#333] rounded h-full">
+                        폴더 내용 미리보기 불가
+                      </div>
+                    ) : imagePreview ? (
+                      <div className="h-full flex flex-col gap-2 p-3 bg-[#151515] border border-[#333] rounded">
+                        <div className="text-sm text-gray-400 border-b border-[#333] pb-2">
+                          <div className="font-bold">{activeTab.selectedFile.name}</div>
+                          <div className="text-xs mt-1">
+                            크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
+                          </div>
+                        </div>
+                        <div className="flex-1 overflow-auto flex items-center justify-center bg-[#1a1a1a] rounded">
+                          <img 
+                            src={imagePreview} 
+                            alt={activeTab.selectedFile.name}
+                            className="max-w-full max-h-full object-contain"
+                            style={{ imageRendering: 'auto' }}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-[#151515] border border-[#333] rounded h-full">
+                        <div className="text-sm text-gray-400 mb-2">
+                          <div className="font-bold">{activeTab.selectedFile.name}</div>
+                          <div className="text-xs mt-1">
+                            크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
+                          </div>
+                        </div>
+                        <div className="text-gray-500 text-xs mt-4">
+                          파일 내용 미리보기는 이미지 파일만 지원됩니다.
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="flex h-full items-center justify-center text-gray-600">선택된 파일 없음</div>

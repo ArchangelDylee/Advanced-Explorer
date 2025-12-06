@@ -204,3 +204,37 @@ ipcMain.handle('get-file-stats', async (event, filePath) => {
   }
 });
 
+ipcMain.handle('read-image-file', async (event, filePath) => {
+  const fs = require('fs').promises;
+  try {
+    const data = await fs.readFile(filePath);
+    const base64 = data.toString('base64');
+    const ext = path.extname(filePath).toLowerCase();
+    
+    // MIME 타입 결정
+    const mimeTypes = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+      '.webp': 'image/webp',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon'
+    };
+    
+    const mimeType = mimeTypes[ext] || 'image/jpeg';
+    
+    return {
+      success: true,
+      dataUrl: `data:${mimeType};base64,${base64}`
+    };
+  } catch (error) {
+    console.error('Error reading image file:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
