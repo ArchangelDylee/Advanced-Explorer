@@ -245,10 +245,21 @@ const MOCK_INDEX_LOGS: IndexLogEntry[] = [
   { time: '14:20:15', path: 'D:\\Backup\\archive.zip', status: 'Indexed', size: '2.5GB' },
 ];
 
+// 사용자 홈 디렉토리 가져오기 (Windows)
+const getUserHome = () => {
+  // Windows 기본 사용자 경로
+  const username = 'dylee'; // 실제 사용자명
+  return `C:\\Users\\${username}`;
+};
+
+const userHome = getUserHome();
+
 const FAVORITES: FavoriteItem[] = [
-  { name: '바탕화면', path: 'C:\\Users\\Admin\\Desktop', icon: Monitor },
-  { name: '문서', path: 'C:\\Users\\Admin\\Documents', icon: Folder },
-  { name: '다운로드', path: 'C:\\Users\\Admin\\Downloads', icon: Folder },
+  { name: '문서', path: `${userHome}\\Documents`, icon: Folder },
+  { name: '바탕화면', path: `${userHome}\\Desktop`, icon: Monitor },
+  { name: '다운로드', path: `${userHome}\\Downloads`, icon: Folder },
+  { name: '사진', path: `${userHome}\\Pictures`, icon: ImageIcon },
+  { name: '음악', path: `${userHome}\\Music`, icon: FileText },
 ];
 
 const ICON_MAP: { [key: string]: LucideIcon } = {
@@ -316,6 +327,7 @@ export default function App() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
   const [isSearching, setIsSearching] = useState(false);
+  const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   
@@ -521,6 +533,16 @@ export default function App() {
     }, 2000);
   };
 
+  const handleIndexStart = () => {
+    if (isIndexing) return;
+    setIsIndexing(true);
+    addSearchLog('색인 시작...');
+    setTimeout(() => {
+      setIsIndexing(false);
+      addSearchLog('색인 완료: 1,204개 파일 인덱싱됨');
+    }, 3000);
+  };
+
   // --- Render Helpers ---
   const renderTree = (nodes: FolderNode[], level = 0, parentPath = "C:\\Users\\Admin") => {
     return nodes.map((node, idx) => {
@@ -656,8 +678,10 @@ export default function App() {
         <div className="flex items-center px-3 pb-3 space-x-3 justify-between">
           <div className="flex items-center space-x-3">
             <span className="font-bold text-[#D0D0D0]">색인:</span>
-            <button disabled={isIndexStopping} className="flex items-center px-4 py-1.5 text-white border border-[#005A9E] bg-[#0067C0] hover:bg-[#0078D7] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100"><Play size={14} className="mr-1" fill="currentColor"/> 시작</button>
-            <button onClick={() => { setIsIndexStopping(true); setTimeout(() => setIsIndexStopping(false), 500); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 active:bg-[#1a1a1a] transition-all duration-100"><Pause size={14} className="mr-1" fill="currentColor"/> 중지</button>
+            <button onClick={handleIndexStart} disabled={isIndexing} className={`flex items-center px-4 py-1.5 text-white transition-transform duration-100 border border-[#005A9E] rounded-sm active:scale-95 ${isIndexing ? 'bg-gray-600' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
+              {isIndexing ? <Activity size={14} className="animate-spin mr-1"/> : <Play size={14} className="mr-1" fill="currentColor"/>} 시작
+            </button>
+            <button onClick={() => { setIsIndexing(false); setIsIndexStopping(true); setTimeout(() => setIsIndexStopping(false), 500); addSearchLog('색인 중단됨'); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] hover:text-white rounded-sm active:scale-95 transition-transform duration-100"><Square size={14} className="mr-1" fill="currentColor"/> 중지</button>
             <span className="text-gray-500 px-2">대기 중...</span>
             <span className="text-[#D0D0D0]">누적: 1,204 개</span>
           </div>
