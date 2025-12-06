@@ -202,6 +202,11 @@ class FileIndexer:
         self.retry_stop_flag = threading.Event()
         self.retry_interval = 300  # 5분 (초 단위)
         
+        # 인덱싱 로그 (메모리, 최근 500개)
+        self.indexing_logs: List[Dict[str, str]] = []
+        self.indexing_logs_lock = threading.Lock()
+        self.max_logs = 500
+        
         # 통계
         self.stats = {
             'total_files': 0,
@@ -300,9 +305,12 @@ class FileIndexer:
                             'retry_count': 0
                         }
             
+            # 메모리에 로그 추가
+            filename = os.path.basename(path)
+            self._add_log_to_memory('Skip', filename, reason)
+            
             # UI 로그 콜백
             if self.log_callback:
-                filename = os.path.basename(path)
                 self.log_callback('Skip', filename, reason)
         
         except Exception as e:
@@ -324,19 +332,109 @@ class FileIndexer:
             with open(self.error_file, 'a', encoding='utf-8') as f:
                 f.write(error_msg)
             
+            # 메모리에 로그 추가
+            filename = os.path.basename(path)
+            self._add_log_to_memory('Error', filename, str(error))
+            
             # UI 로그 콜백
             if self.log_callback:
-                filename = os.path.basename(path)
                 self.log_callback('Error', filename, str(error))
         
         except Exception as e:
             logger.error(f"에러 로그 기록 오류: {e}")
     
-    def _log_success(self, path: str, char_count: int):
-        """성공 로그 (UI만)"""
+    def _add_log_to_memory(self, status: str, filename: str, detail: str):
+        """
+        메모리에 로그 추가 (API 조회용)
+        
+        Args:
+            status: 상태 ('Success', 'Skip', 'Error', 'Indexing', 'Retry Success')
+            filename: 파일명
+            detail: 상세 정보
+        """
+        with self.indexing_logs_lock:
+            log_entry = {
+                'time': datetime.now().strftime('%H:%M:%S'),
+                'status': status,
+                'filename': filename,
+                'detail': detail
+            }
+            self.indexing_logs.insert(0, log_entry)  # 최신 로그를 앞에
+            # 최대 개수 유지
+            if len(self.indexing_logs) > self.max_logs:
+                self.indexing_logs = self.indexing_logs[:self.max_logs]
+    
+    def get_recent_logs(self, count: int = 100) -> List[Dict[str, str]]:
+        """
+        최근 로그 조회
+        
+        Args:
+            count: 조회할 로그 수
+        
+        Returns:
+            로그 리스트
+        """
+        with self.indexing_logs_lock:
+            return self.indexing_logs[:count]
+    
+    def clear_logs(self):
+        """로그 초기화"""
+        with self.indexing_logs_lock:
+            self.indexing_logs = []
+    
+    def _count_tokens(self, text: str) -> int:
+        """
+        텍스트의 토큰(단어) 수 계산
+        
+        Args:
+            text: 텍스트 문자열
+        
+        Returns:
+            토큰 수
+        """
+        if not text:
+            return 0
+        # 공백, 줄바꿈 등으로 분리하여 토큰 수 계산
+        tokens = text.split()
+        return len(tokens)
+    
+    def _log_success(self, path: str, char_count: int, token_count: int = 0, db_saved: bool = True):
+        """
+        성공 로그 (UI만)
+        
+        Args:
+            path: 파일 경로
+            char_count: 추출된 문자 수
+            token_count: 토큰(단어) 수
+            db_saved: DB 저장 성공 여부
+        """
+        filename = os.path.basename(path)
+        db_status = "✓ DB 저장 완료" if db_saved else "⊗ DB 저장 대기"
+        detail = f'{char_count:,}자 / {token_count:,}토큰 | {db_status}'
+        
+        # 메모리에 로그 추가
+        self._add_log_to_memory('Success', filename, detail)
+        
+        # UI 콜백
         if self.log_callback:
-            filename = os.path.basename(path)
-            self.log_callback('Success', filename, f'{char_count} chars')
+            self.log_callback('Success', filename, detail)
+    
+    def _log_indexing(self, path: str):
+        """
+        인덱싱 시작 로그 (현재 처리 중인 파일 표시)
+        
+        Args:
+            path: 파일 경로
+        """
+        filename = os.path.basename(path)
+        detail = '처리 중...'
+        
+        # 메모리에 로그 추가
+        self._add_log_to_memory('Indexing', filename, detail)
+        
+        # UI 콜백
+        if self.log_callback:
+            self.log_callback('Indexing', filename, detail)
     
     def _update_status(self, status: str):
         """상태 업데이트"""
@@ -464,23 +562,47 @@ class FileIndexer:
                     is_new = True
                     self.stats['new_files'] += 1
                 
+                # 현재 처리 중인 파일 로그
+                self._log_indexing(file_path)
+                
                 # 텍스트 추출 (타임아웃 체크)
                 content = self._extract_text_safe(file_path)
                 
                 if content:
+                    # 토큰 수 계산
+                    token_count = self._count_tokens(content)
+                    
                     if is_new:
+                        # 새 파일은 배치에 추가
                         batch.append((file_path, content, current_mtime))
+                        self.stats['indexed_files'] += 1
+                        # DB 저장 대기 상태로 로그
+                        self._log_success(file_path, len(content), token_count, db_saved=False)
                     else:
                         # 수정된 파일은 즉시 업데이트
-                        self.db.update_file(file_path, content, current_mtime)
-                    
-                    self.stats['indexed_files'] += 1
-                    self._log_success(file_path, len(content))
+                        try:
+                            self.db.update_file(file_path, content, current_mtime)
+                            self.stats['indexed_files'] += 1
+                            # DB 저장 완료 상태로 로그
+                            self._log_success(file_path, len(content), token_count, db_saved=True)
+                        except Exception as e:
+                            logger.error(f"DB 업데이트 오류 [{file_path}]: {e}")
+                            self._log_error(file_path, e)
+                            self.stats['error_files'] += 1
+                            continue
                     
                     # 배치가 가득 찼으면 DB에 저장
                     if len(batch) >= batch_size:
-                        self.db.insert_files_batch(batch)
-                        batch = []
+                        try:
+                            self.db.insert_files_batch(batch)
+                            # 배치 저장 후 로그 업데이트
+                            for saved_path, saved_content, _ in batch:
+                                saved_token_count = self._count_tokens(saved_content)
+                                self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True)
+                            batch = []
+                        except Exception as e:
+                            logger.error(f"DB 배치 저장 오류: {e}")
+                            batch = []
                 else:
                     self.stats['skipped_files'] += 1
             
@@ -496,7 +618,14 @@ class FileIndexer:
         
         # 남은 배치 저장
         if batch:
-            self.db.insert_files_batch(batch)
+            try:
+                self.db.insert_files_batch(batch)
+                # 배치 저장 후 로그 업데이트
+                for saved_path, saved_content, _ in batch:
+                    saved_token_count = self._count_tokens(saved_content)
+                    self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True)
+            except Exception as e:
+                logger.error(f"DB 최종 배치 저장 오류: {e}")
     
     def _cleanup_deleted_files(self, current_files: List[str]):
         """삭제된 파일을 DB에서 제거"""
@@ -1091,30 +1220,41 @@ class FileIndexer:
                     if content:
                         # 성공! DB에 저장
                         current_mtime = os.path.getmtime(file_path)
+                        token_count = self._count_tokens(content)
                         
                         # 이미 DB에 있는지 확인
                         indexed_mtime = self.db.get_file_mtime(file_path)
                         
-                        if indexed_mtime is not None:
-                            # 업데이트
-                            self.db.update_file(file_path, content, current_mtime)
-                        else:
-                            # 새로 삽입
-                            self.db.insert_file(file_path, content, current_mtime)
-                        
-                        # 재시도 목록에서 제거
-                        with self.skipped_files_lock:
-                            if file_path in self.skipped_files:
-                                retry_info = self.skipped_files[file_path]
-                                del self.skipped_files[file_path]
-                                logger.info(f"재시도 성공 [{file_path}] - 이전 사유: {retry_info['reason']}")
-                        
-                        retry_success += 1
-                        
-                        # UI 로그 콜백
-                        if self.log_callback:
+                        try:
+                            if indexed_mtime is not None:
+                                # 업데이트
+                                self.db.update_file(file_path, content, current_mtime)
+                            else:
+                                # 새로 삽입
+                                self.db.insert_file(file_path, content, current_mtime)
+                            
+                            # 재시도 목록에서 제거
+                            with self.skipped_files_lock:
+                                if file_path in self.skipped_files:
+                                    retry_info = self.skipped_files[file_path]
+                                    del self.skipped_files[file_path]
+                                    logger.info(f"재시도 성공 [{file_path}] - 이전 사유: {retry_info['reason']}")
+                            
+                            retry_success += 1
+                            
+                            # UI 로그 콜백 및 메모리에 로그 추가 - DB 저장 완료 상태
                             filename = os.path.basename(file_path)
-                            self.log_callback('Retry Success', filename, f'{len(content)} chars')
+                            db_status = "✓ DB 저장 완료 (재시도)"
+                            detail = f'{len(content):,}자 / {token_count:,}토큰 | {db_status}'
+                            
+                            self._add_log_to_memory('Retry Success', filename, detail)
+                            
+                            if self.log_callback:
+                                self.log_callback('Retry Success', filename, detail)
+                        
+                        except Exception as e:
+                            logger.error(f"재시도 DB 저장 오류 [{file_path}]: {e}")
+                            retry_failed += 1
                     
                     else:
                         # 여전히 실패

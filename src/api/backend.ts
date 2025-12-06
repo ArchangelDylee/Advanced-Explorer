@@ -26,6 +26,18 @@ export interface IndexingStatus {
   retry_worker?: RetryWorkerInfo;
 }
 
+export interface IndexingLogEntry {
+  time: string;
+  status: string;
+  filename: string;
+  detail: string;
+}
+
+export interface IndexingLogsResponse {
+  count: number;
+  logs: IndexingLogEntry[];
+}
+
 export interface SearchResult {
   path: string;
   name: string;
@@ -120,6 +132,34 @@ export async function getIndexingStatus(): Promise<IndexingStatus> {
     return await response.json();
   } catch (error) {
     console.error('상태 조회 오류:', error);
+    throw error;
+  }
+}
+
+/**
+ * 인덱싱 로그 조회
+ */
+export async function getIndexingLogs(count: number = 100): Promise<IndexingLogsResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/indexing/logs?count=${count}`);
+    return await response.json();
+  } catch (error) {
+    console.error('로그 조회 오류:', error);
+    throw error;
+  }
+}
+
+/**
+ * 인덱싱 로그 초기화
+ */
+export async function clearIndexingLogs(): Promise<any> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/indexing/logs/clear`, {
+      method: 'POST'
+    });
+    return await response.json();
+  } catch (error) {
+    console.error('로그 초기화 오류:', error);
     throw error;
   }
 }

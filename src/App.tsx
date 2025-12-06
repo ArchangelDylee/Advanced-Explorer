@@ -329,6 +329,7 @@ export default function App() {
   const [showIndexingLog, setShowIndexingLog] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
+  const [indexingLog, setIndexingLog] = useState<IndexLogEntry[]>([]);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
@@ -475,6 +476,17 @@ export default function App() {
 
   const addSearchLog = (msg: string) => {
     setSearchLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  };
+
+  const addIndexingLog = (status: string, filename: string, detail: string) => {
+    const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    const newLog: IndexLogEntry = {
+      time,
+      path: filename,
+      status,
+      size: detail
+    };
+    setIndexingLog(prev => [newLog, ...prev].slice(0, 1000)); // 최대 1000개까지 유지
   };
 
   // 유효한 파일/폴더 이름인지 확인 (특수 문자로 시작하는 것 제외)
@@ -749,11 +761,23 @@ export default function App() {
         setIndexingStatus('색인 진행 중...');
         addSearchLog('색인이 시작되었습니다');
         
-        // 주기적으로 상태 확인
+        // 주기적으로 상태 및 로그 확인
         const statusInterval = setInterval(async () => {
           try {
             const status = await BackendAPI.getIndexingStatus();
             setIndexingStats(status.stats);
+            
+            // 로그 가져오기
+            const logsResponse = await BackendAPI.getIndexingLogs(100);
+            if (logsResponse.logs && logsResponse.logs.length > 0) {
+              const mappedLogs = logsResponse.logs.map(log => ({
+                time: log.time,
+                path: log.filename,
+                status: log.status,
+                size: log.detail
+              }));
+              setIndexingLog(mappedLogs);
+            }
             
             if (!status.is_running) {
               clearInterval(statusInterval);
@@ -1261,13 +1285,26 @@ export default function App() {
             <div className="flex-1 p-4 overflow-auto text-[#D0D0D0] text-xs font-mono">
               {showIndexingLog ? (
                 <div className="space-y-1">
-                  {MOCK_INDEX_LOGS.map((log, i) => (
-                    <div key={i} className="flex gap-2 border-b border-[#333] pb-1">
-                      <span className="text-gray-500">[{log.time}]</span>
-                      <span className={log.status === 'Error' ? 'text-red-400' : 'text-green-400'}>{log.status}</span>
-                      <span className="truncate">{log.path}</span>
+                  {indexingLog.length === 0 ? (
+                    <div className="text-gray-500 text-center py-4">
+                      인덱싱 로그가 없습니다. 색인을 시작하세요.
                     </div>
-                  ))}
+                  ) : (
+                    indexingLog.map((log, i) => (
+                      <div key={i} className="flex gap-2 border-b border-[#333] pb-1 text-[11px]">
+                        <span className="text-gray-500 shrink-0">[{log.time}]</span>
+                        <span className={
+                          log.status === 'Error' ? 'text-red-400 shrink-0 font-bold' : 
+                          log.status === 'Skip' ? 'text-yellow-400 shrink-0 font-bold' : 
+                          log.status === 'Indexing' ? 'text-blue-400 shrink-0 font-bold' :
+                          log.status === 'Retry Success' ? 'text-cyan-400 shrink-0 font-bold' :
+                          'text-green-400 shrink-0 font-bold'
+                        }>{log.status}</span>
+                        <span className="truncate flex-1">{log.path}</span>
+                        <span className="text-gray-400 shrink-0 text-[10px]">{log.size}</span>
+                      </div>
+                    ))
+                  )}
                 </div>
               ) : (
                 activeTab.selectedFile ? (

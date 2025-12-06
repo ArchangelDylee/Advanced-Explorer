@@ -153,6 +153,41 @@ def indexing_status():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/indexing/logs', methods=['GET'])
+def indexing_logs():
+    """
+    인덱싱 로그 조회
+    
+    Query Parameters:
+        count: 조회할 로그 수 (기본: 100)
+    """
+    try:
+        count = request.args.get('count', 100, type=int)
+        logs = indexer.get_recent_logs(count)
+        
+        return jsonify({
+            'count': len(logs),
+            'logs': logs
+        })
+    except Exception as e:
+        logger.error(f"로그 조회 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/indexing/logs/clear', methods=['POST'])
+def clear_indexing_logs():
+    """인덱싱 로그 초기화"""
+    try:
+        indexer.clear_logs()
+        return jsonify({
+            'status': 'success',
+            'message': '로그가 초기화되었습니다.'
+        })
+    except Exception as e:
+        logger.error(f"로그 초기화 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/search', methods=['POST'])
 def search():
     """파일 검색 (내용만)"""
