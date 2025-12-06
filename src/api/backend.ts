@@ -14,9 +14,16 @@ export interface IndexingStats {
   end_time: number | null;
 }
 
+export interface RetryWorkerInfo {
+  is_running: boolean;
+  pending_files: number;
+  interval_seconds: number;
+}
+
 export interface IndexingStatus {
   is_running: boolean;
   stats: IndexingStats;
+  retry_worker?: RetryWorkerInfo;
 }
 
 export interface SearchResult {

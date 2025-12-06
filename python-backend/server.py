@@ -9,6 +9,7 @@ import logging
 import threading
 import sys
 import os
+import atexit
 
 from database import DatabaseManager
 from indexer import FileIndexer
@@ -46,6 +47,31 @@ def initialize():
     # 검색 엔진 초기화
     search_engine = SearchEngine(db_manager)
     logger.info("검색 엔진 초기화 완료")
+    
+    # 종료 시 정리 함수 등록
+    atexit.register(cleanup)
+
+
+def cleanup():
+    """백엔드 종료 시 정리"""
+    global indexer, db_manager
+    
+    try:
+        if indexer:
+            # 재시도 워커 중지
+            indexer.stop_retry_worker()
+            
+            # 인덱싱 중지
+            if indexer.is_running:
+                indexer.stop_indexing()
+        
+        if db_manager:
+            db_manager.close()
+        
+        logger.info("백엔드 정리 완료")
+    
+    except Exception as e:
+        logger.error(f"정리 중 오류: {e}")
 
 
 # ============== API 엔드포인트 ==============
@@ -110,9 +136,17 @@ def indexing_status():
     """인덱싱 상태 조회"""
     try:
         stats = indexer.get_stats()
+        skipped_count = indexer.get_skipped_files_count()
+        retry_running = indexer.retry_thread and indexer.retry_thread.is_alive()
+        
         return jsonify({
             'is_running': indexer.is_running,
-            'stats': stats
+            'stats': stats,
+            'retry_worker': {
+                'is_running': retry_running,
+                'pending_files': skipped_count,
+                'interval_seconds': indexer.retry_interval
+            }
         })
     except Exception as e:
         logger.error(f"상태 조회 오류: {e}")

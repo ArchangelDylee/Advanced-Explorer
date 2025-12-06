@@ -7,6 +7,7 @@ import {
   FileSpreadsheet, FileCode, FileArchive, LayoutTemplate,
   FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity
 } from 'lucide-react';
+import * as BackendAPI from './api/backend';
 
 // --- Types & Interfaces ---
 
@@ -330,7 +331,10 @@ export default function App() {
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
+  const [indexingStatus, setIndexingStatus] = useState<string>('대기 중...');
+  const [indexingStats, setIndexingStats] = useState<BackendAPI.IndexingStats | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -699,6 +703,112 @@ export default function App() {
     }
   };
 
+  // --- Indexing Functions ---
+  const getSelectedDirectory = (): string | null => {
+    // 1순위: 폴더 트리에서 선택된 디렉토리 찾기
+    const findSelectedInTree = (nodes: FolderNode[]): string | null => {
+      for (const node of nodes) {
+        if (node.selected && node.path) {
+          return node.path;
+        }
+        if (node.children) {
+          const found = findSelectedInTree(node.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const selectedFromTree = findSelectedInTree(folderStructure);
+    if (selectedFromTree) return selectedFromTree;
+
+    // 2순위: 현재 탭의 경로 사용
+    if (activeTab.currentPath) {
+      return activeTab.currentPath;
+    }
+
+    return null;
+  };
+
+  const handleIndexStart = async () => {
+    const selectedDir = getSelectedDirectory();
+    
+    if (!selectedDir) {
+      addSearchLog('색인 시작 실패: 디렉토리가 선택되지 않았습니다');
+      return;
+    }
+
+    try {
+      setIsIndexing(true);
+      setIndexingStatus('색인 시작 중...');
+      addSearchLog(`색인 시작: ${selectedDir}`);
+      
+      const response = await BackendAPI.startIndexing([selectedDir]);
+      
+      if (response.status === 'started') {
+        setIndexingStatus('색인 진행 중...');
+        addSearchLog('색인이 시작되었습니다');
+        
+        // 주기적으로 상태 확인
+        const statusInterval = setInterval(async () => {
+          try {
+            const status = await BackendAPI.getIndexingStatus();
+            setIndexingStats(status.stats);
+            
+            if (!status.is_running) {
+              clearInterval(statusInterval);
+              setIsIndexing(false);
+              
+              // 재시도 워커 상태 표시
+              if (status.retry_worker?.is_running && status.retry_worker.pending_files > 0) {
+                setIndexingStatus(`대기 중 (재시도 ${status.retry_worker.pending_files}개)`);
+                addSearchLog(`색인 완료: 총 ${status.stats.indexed_files}개 파일`);
+                addSearchLog(`재시도 워커 시작: Skip된 ${status.retry_worker.pending_files}개 파일 ${Math.floor(status.retry_worker.interval_seconds / 60)}분마다 재시도`);
+              } else {
+                setIndexingStatus('대기 중...');
+                addSearchLog(`색인 완료: 총 ${status.stats.indexed_files}개 파일`);
+              }
+            } else {
+              setIndexingStatus(`색인 중... (${status.stats.indexed_files}/${status.stats.total_files})`);
+            }
+          } catch (error) {
+            console.error('색인 상태 확인 오류:', error);
+          }
+        }, 1000); // 1초마다 상태 확인
+        
+      } else {
+        throw new Error(response.message || '색인 시작 실패');
+      }
+    } catch (error) {
+      console.error('색인 시작 오류:', error);
+      addSearchLog(`색인 오류: ${error}`);
+      setIsIndexing(false);
+      setIndexingStatus('대기 중...');
+    }
+  };
+
+  const handleIndexStop = async () => {
+    try {
+      setIsIndexStopping(true);
+      addSearchLog('색인 중지 요청...');
+      
+      await BackendAPI.stopIndexing();
+      
+      setIsIndexing(false);
+      setIsIndexStopping(false);
+      setIndexingStatus('중지됨');
+      addSearchLog('색인이 중지되었습니다');
+      
+      setTimeout(() => {
+        setIndexingStatus('대기 중...');
+      }, 2000);
+    } catch (error) {
+      console.error('색인 중지 오류:', error);
+      addSearchLog(`색인 중지 오류: ${error}`);
+      setIsIndexStopping(false);
+    }
+  };
+
   // --- File Actions ---
   const handleNewFolder = () => {
     const base = "새 폴더";
@@ -1000,9 +1110,19 @@ export default function App() {
         <div className="flex items-center px-3 pb-3 space-x-3 justify-between">
           <div className="flex items-center space-x-3">
             <span className="font-bold text-[#D0D0D0]">색인:</span>
-            <button disabled={isIndexStopping} className="flex items-center px-4 py-1.5 text-white border border-[#005A9E] bg-[#0067C0] hover:bg-[#0078D7] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100"><Play size={14} className="mr-1" fill="currentColor"/> 시작</button>
-            <button onClick={() => { setIsIndexStopping(true); setTimeout(() => setIsIndexStopping(false), 500); }} className="flex items-center px-3 py-1.5 border border-[#444] bg-[#202020] text-[#D0D0D0] hover:bg-[#333] rounded-sm active:scale-95 active:bg-[#1a1a1a] transition-all duration-100"><Pause size={14} className="mr-1" fill="currentColor"/> 중지</button>
-            <span className="text-gray-500 px-2">대기 중...</span>
+            <button 
+              onClick={handleIndexStart} 
+              disabled={isIndexing || isIndexStopping} 
+              className={`flex items-center px-4 py-1.5 text-white border border-[#005A9E] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100 ${isIndexing ? 'bg-[#005A9E] cursor-not-allowed' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
+              <Play size={14} className="mr-1" fill="currentColor"/> 시작
+            </button>
+            <button 
+              onClick={handleIndexStop} 
+              disabled={!isIndexing || isIndexStopping}
+              className={`flex items-center px-3 py-1.5 border border-[#444] rounded-sm active:scale-95 active:bg-[#1a1a1a] transition-all duration-100 ${!isIndexing ? 'bg-[#202020] text-[#999] cursor-not-allowed' : 'bg-[#202020] text-[#D0D0D0] hover:bg-[#333]'}`}>
+              <Pause size={14} className="mr-1" fill="currentColor"/> 중지
+            </button>
+            <span className={`px-2 ${isIndexing ? 'text-[#0078D7]' : 'text-gray-500'}`}>{indexingStatus}</span>
             <span className="text-[#D0D0D0]">누적: 1,204 개</span>
           </div>
           <div className="flex space-x-4">

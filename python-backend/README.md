@@ -7,6 +7,8 @@
 - **고속 전문 검색**: SQLite FTS5 + trigram 토크나이저로 한국어 검색 최적화
 - **비동기 인덱싱**: Worker 쓰레드를 사용한 UI 블로킹 없는 처리
 - **증분 인덱싱**: 수정된 파일만 재인덱싱하여 성능 최적화
+- **자동 재시도**: Skip된 파일을 5-10분마다 백그라운드에서 자동 재시도
+- **열린 파일 처리**: 다른 프로그램이 사용 중인 파일도 디스크 기반 읽기로 인덱싱
 - **다양한 파일 형식 지원**: TXT, DOCX, PPTX, PDF 등
 - **REST API**: Electron 앱과 Flask API로 통신
 
@@ -507,6 +509,57 @@ python search.py
 - COM 객체 사용 시 `Visible=False`, `DisplayAlerts=False` 설정
 - 오피스 창이나 경고 팝업 최대한 억제
 - 타임아웃으로 멈춤 방지
+
+### 🔁 자동 재시도 워커 (Retry Worker)
+
+**개요:**  
+인덱싱 중 Skip된 파일(잠금, 암호화 등)을 백그라운드에서 자동으로 재시도합니다.
+
+**동작 방식:**
+
+1. **Skip 시 등록**
+   - 재시도 가능한 오류 발생 시 메모리 목록에 추가
+   - `skipcheck.txt`에도 기록
+
+2. **백그라운드 재시도**
+   - 인덱싱 완료 후 자동으로 재시도 워커 시작
+   - **5분마다** Skip된 파일을 자동으로 재시도
+   - 성공 시 DB에 인덱싱하고 목록에서 제거
+
+3. **재시도 제한**
+   - 최대 **5회 재시도** 후 포기
+   - 파일 삭제/용량 초과 시 즉시 제거
+
+4. **종료 조건**
+   - 재시도할 파일이 모두 처리되면 자동 종료
+   - 앱 종료 시 정리 (cleanup)
+
+**재시도 대상:**
+- ✅ 파일 잠금 (Permission denied)
+- ✅ 타임아웃 (Parsing timeout)
+- ✅ 암호화 (Password protected) - 사용자가 해제 가능
+- ❌ 용량 초과, 손상된 파일 - 재시도 안 함
+
+**API 응답 예시:**
+```json
+{
+  "is_running": false,
+  "stats": {...},
+  "retry_worker": {
+    "is_running": true,
+    "pending_files": 12,
+    "interval_seconds": 300
+  }
+}
+```
+
+**로그 메시지:**
+```
+재시도 워커 시작: Skip된 파일 12개
+재시도 성공 [C:\example.xlsx] - 이전 사유: File locked
+재시도 5회 실패, 포기: C:\protected.pdf - Password protected
+재시도 완료: 성공 5개, 실패 7개
+```
 
 ## 🔄 증분 색인 (Incremental Indexing)
 

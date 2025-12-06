@@ -193,6 +193,15 @@ class FileIndexer:
         # 사용자 정의 제외 패턴
         self.custom_excluded_patterns: List[str] = []
         
+        # Skip된 파일 목록 (재시도용)
+        self.skipped_files: Dict[str, Dict[str, any]] = {}  # {path: {reason, time, retry_count}}
+        self.skipped_files_lock = threading.Lock()
+        
+        # 재시도 스레드
+        self.retry_thread: Optional[threading.Thread] = None
+        self.retry_stop_flag = threading.Event()
+        self.retry_interval = 300  # 5분 (초 단위)
+        
         # 통계
         self.stats = {
             'total_files': 0,
@@ -265,7 +274,7 @@ class FileIndexer:
     
     def _log_skip(self, path: str, reason: str):
         """
-        Skip 로그 기록 (skipcheck.txt)
+        Skip 로그 기록 (skipcheck.txt 및 재시도 목록)
         
         Format: [Timestamp] Path : Reason
         """
@@ -275,6 +284,21 @@ class FileIndexer:
             
             with open(self.skipcheck_file, 'a', encoding='utf-8') as f:
                 f.write(log_line)
+            
+            # 재시도 가능한 오류인 경우 목록에 추가
+            retryable_reasons = [
+                'File locked', 'Permission denied', 'Parsing timeout',
+                'Password protected'  # 사용자가 암호 해제할 수 있음
+            ]
+            
+            if any(retryable in reason for retryable in retryable_reasons):
+                with self.skipped_files_lock:
+                    if path not in self.skipped_files:
+                        self.skipped_files[path] = {
+                            'reason': reason,
+                            'time': time.time(),
+                            'retry_count': 0
+                        }
             
             # UI 로그 콜백
             if self.log_callback:
@@ -324,6 +348,14 @@ class FileIndexer:
         if self.is_running:
             logger.info("인덱싱 중지 요청...")
             self.stop_flag.set()
+    
+    def stop_retry_worker(self):
+        """재시도 워커 중지"""
+        if self.retry_thread and self.retry_thread.is_alive():
+            logger.info("재시도 워커 중지 요청...")
+            self.retry_stop_flag.set()
+            self.retry_thread.join(timeout=2)
+            logger.info("재시도 워커 중지됨")
     
     def _indexing_worker(self, root_paths: List[str]):
         """인덱싱 워커 (백그라운드 쓰레드) - 증분 색인"""
@@ -381,6 +413,12 @@ class FileIndexer:
             logger.info(summary)
             self._update_status(summary)
             self.is_running = False
+            
+            # 재시도 워커 시작 (Skip된 파일이 있는 경우)
+            with self.skipped_files_lock:
+                if self.skipped_files:
+                    logger.info(f"재시도 워커 시작: Skip된 파일 {len(self.skipped_files)}개")
+                    self.start_retry_worker()
     
     def _process_files_incremental(self, all_files: List[str]):
         """증분 파일 처리 (New/Modified만)"""
@@ -971,6 +1009,142 @@ class FileIndexer:
     def get_stats(self) -> dict:
         """인덱싱 통계 반환"""
         return self.stats.copy()
+    
+    def start_retry_worker(self):
+        """
+        재시도 워커 시작 (백그라운드 스레드)
+        
+        5-10분마다 Skip된 파일을 재시도하여 인덱싱
+        """
+        if self.retry_thread and self.retry_thread.is_alive():
+            logger.warning("재시도 워커가 이미 실행 중입니다.")
+            return
+        
+        self.retry_stop_flag.clear()
+        self.retry_thread = threading.Thread(
+            target=self._retry_worker,
+            name="RetryWorker",
+            daemon=True
+        )
+        self.retry_thread.start()
+        logger.info(f"재시도 워커 시작됨 (간격: {self.retry_interval}초)")
+    
+    def _retry_worker(self):
+        """
+        재시도 워커 스레드
+        
+        주기적으로 Skip된 파일을 재시도하여 인덱싱
+        """
+        logger.info("재시도 워커 동작 시작")
+        
+        while not self.retry_stop_flag.is_set():
+            # 대기 (5분 = 300초, 인터럽트 가능하도록 1초씩 체크)
+            for _ in range(self.retry_interval):
+                if self.retry_stop_flag.is_set():
+                    break
+                time.sleep(1)
+            
+            if self.retry_stop_flag.is_set():
+                break
+            
+            # Skip된 파일 재시도
+            with self.skipped_files_lock:
+                if not self.skipped_files:
+                    logger.info("재시도할 파일이 없습니다. 워커 종료.")
+                    break
+                
+                files_to_retry = list(self.skipped_files.keys())
+            
+            logger.info(f"Skip된 파일 재시도 시작: {len(files_to_retry)}개")
+            
+            retry_success = 0
+            retry_failed = 0
+            
+            for file_path in files_to_retry:
+                if self.retry_stop_flag.is_set():
+                    break
+                
+                try:
+                    # 파일이 존재하는지 확인
+                    if not os.path.exists(file_path):
+                        with self.skipped_files_lock:
+                            if file_path in self.skipped_files:
+                                del self.skipped_files[file_path]
+                        logger.debug(f"파일 삭제됨, 재시도 목록에서 제거: {file_path}")
+                        continue
+                    
+                    # 파일 크기 재확인
+                    try:
+                        file_size = os.path.getsize(file_path)
+                        if file_size > MAX_FILE_SIZE:
+                            with self.skipped_files_lock:
+                                if file_path in self.skipped_files:
+                                    del self.skipped_files[file_path]
+                            logger.debug(f"파일 크기 초과, 재시도 중단: {file_path}")
+                            continue
+                    except Exception:
+                        pass
+                    
+                    # 텍스트 추출 재시도
+                    content = self._extract_text_safe(file_path)
+                    
+                    if content:
+                        # 성공! DB에 저장
+                        current_mtime = os.path.getmtime(file_path)
+                        
+                        # 이미 DB에 있는지 확인
+                        indexed_mtime = self.db.get_file_mtime(file_path)
+                        
+                        if indexed_mtime is not None:
+                            # 업데이트
+                            self.db.update_file(file_path, content, current_mtime)
+                        else:
+                            # 새로 삽입
+                            self.db.insert_file(file_path, content, current_mtime)
+                        
+                        # 재시도 목록에서 제거
+                        with self.skipped_files_lock:
+                            if file_path in self.skipped_files:
+                                retry_info = self.skipped_files[file_path]
+                                del self.skipped_files[file_path]
+                                logger.info(f"재시도 성공 [{file_path}] - 이전 사유: {retry_info['reason']}")
+                        
+                        retry_success += 1
+                        
+                        # UI 로그 콜백
+                        if self.log_callback:
+                            filename = os.path.basename(file_path)
+                            self.log_callback('Retry Success', filename, f'{len(content)} chars')
+                    
+                    else:
+                        # 여전히 실패
+                        with self.skipped_files_lock:
+                            if file_path in self.skipped_files:
+                                self.skipped_files[file_path]['retry_count'] += 1
+                                retry_count = self.skipped_files[file_path]['retry_count']
+                                
+                                # 5회 재시도 실패 시 포기
+                                if retry_count >= 5:
+                                    reason = self.skipped_files[file_path]['reason']
+                                    del self.skipped_files[file_path]
+                                    logger.warning(f"재시도 5회 실패, 포기: {file_path} - {reason}")
+                                else:
+                                    logger.debug(f"재시도 실패 ({retry_count}/5): {file_path}")
+                        
+                        retry_failed += 1
+                
+                except Exception as e:
+                    logger.error(f"재시도 중 오류 [{file_path}]: {e}")
+                    retry_failed += 1
+            
+            logger.info(f"재시도 완료: 성공 {retry_success}개, 실패 {retry_failed}개")
+        
+        logger.info("재시도 워커 종료")
+    
+    def get_skipped_files_count(self) -> int:
+        """현재 재시도 대기 중인 파일 수 반환"""
+        with self.skipped_files_lock:
+            return len(self.skipped_files)
 
 
 # 테스트 코드
