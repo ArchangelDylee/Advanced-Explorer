@@ -346,19 +346,23 @@ export default function App() {
           const driveNodes: FolderNode[] = await Promise.all(
             drives.map(async (drive: any) => {
               const rootDirs = await electronAPI.readDirectoriesOnly(drive.path);
+              // 특수 문자로 시작하는 폴더 필터링
+              const validRootDirs = rootDirs.filter((dir: any) => isValidName(dir.name));
               
               // C:\ 드라이브만 추가로 하위 폴더 로드
               const rootChildren = await Promise.all(
-                rootDirs.map(async (dir: any) => {
+                validRootDirs.map(async (dir: any) => {
                   if (drive.path === 'C:\\' && (dir.name === 'Users')) {
                     // Users 폴더는 하위까지 로드
                     const userDirs = await electronAPI.readDirectoriesOnly(dir.path);
+                    // 특수 문자로 시작하는 폴더 필터링
+                    const validUserDirs = userDirs.filter((userDir: any) => isValidName(userDir.name));
                     return {
                       name: dir.name,
                       icon: 'Folder',
                       path: dir.path,
                       expanded: true,
-                      children: userDirs.map((userDir: any) => ({
+                      children: validUserDirs.map((userDir: any) => ({
                         name: userDir.name,
                         icon: 'Folder',
                         path: userDir.path,
@@ -427,6 +431,11 @@ export default function App() {
     setSearchLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
   };
 
+  // 유효한 파일/폴더 이름인지 확인 (특수 문자로 시작하는 것 제외)
+  const isValidName = (name: string): boolean => {
+    return /^[a-zA-Z0-9가-힣]/.test(name);
+  };
+
   // --- Directory Content Generator (The "Fake" File System) ---
   // 파일 크기 포맷팅
   const formatFileSize = (bytes: number): string => {
@@ -458,8 +467,11 @@ export default function App() {
         const electronAPI = (window as any).electronAPI;
         const files = await electronAPI.readDirectory(path);
         
+        // 특수 문자로 시작하는 파일/폴더 필터링
+        const validFiles = files.filter((file: any) => isValidName(file.name));
+        
         const fileItems: FileItem[] = await Promise.all(
-          files.map(async (file: any) => {
+          validFiles.map(async (file: any) => {
             const stats = await electronAPI.getFileStats(file.path);
             const fileSize = stats && !stats.isDirectory ? formatFileSize(stats.size) : '';
             const modifiedDate = stats ? new Date(stats.modified).toLocaleDateString() : '';
@@ -662,12 +674,15 @@ export default function App() {
         const electronAPI = (window as any).electronAPI;
         const subdirs = await electronAPI.readDirectoriesOnly(node.path);
         
+        // 특수 문자로 시작하는 폴더 필터링
+        const validSubdirs = subdirs.filter((dir: any) => isValidName(dir.name));
+        
         const updateNode = (list: FolderNode[]): FolderNode[] => 
           list.map(n => {
             if (n === node) {
               return {
                 ...n,
-                children: subdirs.map((dir: any) => ({
+                children: validSubdirs.map((dir: any) => ({
                   name: dir.name,
                   icon: 'Folder',
                   path: dir.path,
@@ -693,8 +708,6 @@ export default function App() {
   };
 
   const renderTree = (nodes: FolderNode[], level = 0) => {
-    const isValidName = (name: string) => /^[a-zA-Z0-9가-힣]/.test(name);
-    
     return nodes.filter(node => isValidName(node.name)).map((node, idx) => {
       // 경로는 노드에 저장된 path 사용
       const currentPath = node.path || node.name;
