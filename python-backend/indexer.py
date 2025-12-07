@@ -714,8 +714,14 @@ class FileIndexer:
             self.db.optimize()
             
         except Exception as e:
-            logger.error(f"인덱싱 워커 오류: {e}")
+            error_msg = f"인덱싱 워커 오류: {type(e).__name__} - {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
             self._log_error("IndexingWorker", e)
+            
+            # UI에 에러 원인 표시
+            if self.log_callback:
+                self.log_callback('Error', '인덱싱 중단', f'{type(e).__name__}: {str(e)}')
         
         finally:
             self.stats['end_time'] = time.time()
@@ -735,11 +741,24 @@ class FileIndexer:
         """증분 파일 처리 (New/Modified만)"""
         batch_size = 20  # 20개 파일마다 DB Commit
         batch = []
+        last_progress_time = time.time()
+        stall_warning_threshold = 120  # 2분 동안 진행 없으면 경고
         
         for i, file_path in enumerate(all_files):
             if self.stop_flag.is_set():
-                logger.info("인덱싱 중지됨")
+                logger.info("인덱싱 중지됨 (사용자 요청)")
+                if self.log_callback:
+                    self.log_callback('Info', '인덱싱 중지', '사용자가 중지를 요청했습니다')
                 break
+            
+            # 진행 상황 체크 (2분 이상 멈춤 감지)
+            current_time = time.time()
+            if current_time - last_progress_time > stall_warning_threshold:
+                warning_msg = f"⚠ 인덱싱 진행 지연 감지: {file_path} 처리 중 {stall_warning_threshold}초 경과"
+                logger.warning(warning_msg)
+                if self.log_callback:
+                    self.log_callback('Error', '진행 지연', f'{os.path.basename(file_path)} 처리 중 지연')
+                last_progress_time = current_time
             
             try:
                 # 진행 상황 콜백
@@ -813,8 +832,11 @@ class FileIndexer:
                                 # 3. DB 저장 완료 로그
                                 self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
                             batch = []
+                            last_progress_time = time.time()  # 진행 시간 업데이트
                         except Exception as e:
                             logger.error(f"DB 배치 저장 오류: {e}")
+                            if self.log_callback:
+                                self.log_callback('Error', 'DB 저장', f'배치 저장 오류: {str(e)}')
                             batch = []
                 else:
                     self.stats['skipped_files'] += 1
@@ -825,21 +847,43 @@ class FileIndexer:
                 self.stats['skipped_files'] += 1
             
             except Exception as e:
-                logger.error(f"파일 처리 오류 [{file_path}]: {e}")
-                self._log_error(file_path, e)
+                error_type = type(e).__name__
+                error_msg = str(e)
+                logger.error(f"파일 처리 오류 [{file_path}]: {error_type} - {error_msg}")
+                logger.error(f"상세 정보: {traceback.format_exc()}")
+                
+                # UI에 에러 원인 표시
+                self._log_error(file_path, f"{error_type}: {error_msg}")
                 self.stats['error_files'] += 1
+                
+                # 타임아웃 에러인 경우 특별히 표시
+                if 'timeout' in error_msg.lower() or error_type == 'TimeoutError':
+                    if self.log_callback:
+                        self.log_callback('Error', os.path.basename(file_path), f'⏱ 타임아웃 (60초 초과)')
+                elif 'memory' in error_msg.lower():
+                    if self.log_callback:
+                        self.log_callback('Error', os.path.basename(file_path), f'💾 메모리 부족')
+                elif error_type == 'PermissionError':
+                    if self.log_callback:
+                        self.log_callback('Error', os.path.basename(file_path), f'🔒 권한 오류')
         
         # 남은 배치 저장
         if batch:
             try:
+                logger.info(f"최종 배치 저장 중: {len(batch)}개 파일")
                 # 배치 저장 (토큰 수 제외)
                 batch_for_db = [(path, content, mtime) for path, content, mtime, _ in batch]
                 self.db.insert_files_batch(batch_for_db)
                 # 배치 저장 후 DB 저장 완료 로그 생성
                 for saved_path, saved_content, _, saved_token_count in batch:
                     self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
+                logger.info(f"✓ 최종 배치 저장 완료: {len(batch)}개 파일")
             except Exception as e:
-                logger.error(f"DB 최종 배치 저장 오류: {e}")
+                error_msg = f"DB 최종 배치 저장 오류: {type(e).__name__} - {str(e)}"
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+                if self.log_callback:
+                    self.log_callback('Error', '최종 DB 저장', f'배치 저장 실패: {str(e)}')
     
     def _cleanup_deleted_files(self, current_files: List[str]):
         """삭제된 파일을 DB에서 제거"""
