@@ -422,7 +422,8 @@ class FileIndexer:
             # 재시도 가능한 오류인 경우 목록에 추가
             retryable_reasons = [
                 'File locked', 'Permission denied', 'Parsing timeout',
-                'Password protected'  # 사용자가 암호 해제할 수 있음
+                'Password protected',  # 사용자가 암호 해제할 수 있음
+                'File is open'  # 사용자가 파일을 닫으면 재시도
             ]
             
             if any(retryable in reason for retryable in retryable_reasons):
@@ -513,6 +514,23 @@ class FileIndexer:
         """로그 초기화"""
         with self.indexing_logs_lock:
             self.indexing_logs = []
+    
+    def _add_to_retry_queue(self, file_path: str, reason: str):
+        """
+        재시도 큐에 파일 추가
+        
+        Args:
+            file_path: 파일 경로
+            reason: Skip 사유
+        """
+        with self.skipped_files_lock:
+            if file_path not in self.skipped_files:
+                self.skipped_files[file_path] = {
+                    'reason': reason,
+                    'time': time.time(),
+                    'retry_count': 0
+                }
+                logger.info(f"재시도 큐 추가: {file_path} (사유: {reason})")
     
     def _count_tokens(self, text: str) -> int:
         """
@@ -742,8 +760,8 @@ class FileIndexer:
                     token_count = self._count_tokens(content)
                     
                     if is_new:
-                        # 새 파일은 배치에 추가 (로그는 나중에)
-                        batch.append((file_path, content, current_mtime))
+                        # 새 파일은 배치에 추가 (로그는 DB 저장 완료 후 생성)
+                        batch.append((file_path, content, current_mtime, token_count))
                         self.stats['indexed_files'] += 1
                     else:
                         # 수정된 파일은 즉시 업데이트
@@ -761,10 +779,12 @@ class FileIndexer:
                     # 배치가 가득 찼으면 DB에 저장
                     if len(batch) >= batch_size:
                         try:
-                            self.db.insert_files_batch(batch)
-                            # 배치 저장 후 로그 업데이트
-                            for saved_path, saved_content, _ in batch:
-                                saved_token_count = self._count_tokens(saved_content)
+                            # 배치 저장 (토큰 수 제외)
+                            batch_for_db = [(path, content, mtime) for path, content, mtime, _ in batch]
+                            self.db.insert_files_batch(batch_for_db)
+                            # 배치 저장 후 DB 저장 완료 로그 생성
+                            for saved_path, saved_content, _, saved_token_count in batch:
+                                # 3. DB 저장 완료 로그
                                 self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
                             batch = []
                         except Exception as e:
@@ -786,10 +806,11 @@ class FileIndexer:
         # 남은 배치 저장
         if batch:
             try:
-                self.db.insert_files_batch(batch)
-                # 배치 저장 후 로그 업데이트
-                for saved_path, saved_content, _ in batch:
-                    saved_token_count = self._count_tokens(saved_content)
+                # 배치 저장 (토큰 수 제외)
+                batch_for_db = [(path, content, mtime) for path, content, mtime, _ in batch]
+                self.db.insert_files_batch(batch_for_db)
+                # 배치 저장 후 DB 저장 완료 로그 생성
+                for saved_path, saved_content, _, saved_token_count in batch:
                     self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
             except Exception as e:
                 logger.error(f"DB 최종 배치 저장 오류: {e}")
@@ -834,10 +855,15 @@ class FileIndexer:
         
         except TimeoutError:
             self._log_skip(file_path, f"Parsing timeout (>{PARSE_TIMEOUT}s)")
+            # 재시도 목록에 추가
+            self._add_to_retry_queue(file_path, f"Parsing timeout (>{PARSE_TIMEOUT}s)")
             return None
         
-        except PermissionError:
-            self._log_skip(file_path, "File locked or Permission denied")
+        except PermissionError as e:
+            # 파일이 다른 프로그램에서 열려있음
+            self._log_skip(file_path, "File is open in another program")
+            # 재시도 목록에 추가 (나중에 파일이 닫히면 다시 시도)
+            self._add_to_retry_queue(file_path, "File is open in another program")
             return None
         
         except Exception as e:
@@ -845,8 +871,11 @@ class FileIndexer:
             error_msg = str(e).lower()
             if 'password' in error_msg or 'encrypted' in error_msg:
                 self._log_skip(file_path, "Password protected")
+                # 암호 보호 파일도 재시도 목록에 추가 (사용자가 암호 해제할 수 있음)
+                self._add_to_retry_queue(file_path, "Password protected")
             elif 'corrupt' in error_msg or 'damaged' in error_msg:
                 self._log_skip(file_path, "File corrupted")
+                # 손상된 파일은 재시도하지 않음
             else:
                 self._log_skip(file_path, f"Parse error: {str(e)[:100]}")
             return None
@@ -982,6 +1011,31 @@ class FileIndexer:
             return False
         return name[0].isalnum() or ord(name[0]) >= 0xAC00  # 영문, 숫자, 한글
     
+    def _is_file_locked(self, file_path: str) -> bool:
+        """
+        파일이 다른 프로세스에서 사용 중인지 간단히 확인
+        
+        Args:
+            file_path: 파일 경로
+        
+        Returns:
+            True면 파일이 잠겨있음
+        """
+        try:
+            # 간단한 읽기 시도로 파일 접근 가능 여부만 확인
+            # 실제로 열려있어도 읽기는 가능한 경우가 많으므로
+            # 텍스트 추출 단계에서 처리하는 것이 더 안전
+            with open(file_path, 'rb') as f:
+                # 첫 바이트만 읽어보기
+                f.read(1)
+            return False
+        except (PermissionError, IOError, OSError):
+            # 권한 없거나 접근 불가
+            return True
+        except Exception:
+            # 기타 오류는 잠금으로 간주하지 않음
+            return False
+    
     
     def _extract_text(self, file_path: str) -> Optional[str]:
         """
@@ -1112,7 +1166,8 @@ class FileIndexer:
             word.Visible = False
             word.DisplayAlerts = False
             
-            doc = word.Documents.Open(file_path)
+            # ReadOnly=True로 열어서 사용자가 연 파일과 충돌 방지
+            doc = word.Documents.Open(file_path, ReadOnly=True)
             text = doc.Content.Text
             doc.Close(False)
             word.Quit()
@@ -1122,6 +1177,10 @@ class FileIndexer:
             return text[:100000]
         except Exception as e:
             logger.debug(f"DOC 추출 오류 [{file_path}]: {e}")
+            try:
+                word.Quit()
+            except:
+                pass
             try:
                 pythoncom.CoUninitialize()
             except:
@@ -1141,7 +1200,8 @@ class FileIndexer:
             ppt.Visible = False
             ppt.DisplayAlerts = False
             
-            presentation = ppt.Presentations.Open(file_path, WithWindow=False)
+            # ReadOnly=True로 열어서 사용자가 연 파일과 충돌 방지
+            presentation = ppt.Presentations.Open(file_path, ReadOnly=True, WithWindow=False)
             text_parts = []
             
             for slide in presentation.Slides:
@@ -1158,6 +1218,10 @@ class FileIndexer:
             return '\n'.join(text_parts)[:100000]
         except Exception as e:
             logger.debug(f"PPT 추출 오류 [{file_path}]: {e}")
+            try:
+                ppt.Quit()
+            except:
+                pass
             try:
                 pythoncom.CoUninitialize()
             except:
@@ -1202,7 +1266,8 @@ class FileIndexer:
             excel.Visible = False
             excel.DisplayAlerts = False
             
-            workbook = excel.Workbooks.Open(file_path)
+            # ReadOnly=True로 열어서 사용자가 연 파일과 충돌 방지
+            workbook = excel.Workbooks.Open(file_path, ReadOnly=True)
             text_parts = []
             
             # 모든 시트 순회
@@ -1221,6 +1286,10 @@ class FileIndexer:
             return ' '.join(text_parts)[:100000]
         except Exception as e:
             logger.debug(f"XLS 추출 오류 [{file_path}]: {e}")
+            try:
+                excel.Quit()
+            except:
+                pass
             try:
                 pythoncom.CoUninitialize()
             except:

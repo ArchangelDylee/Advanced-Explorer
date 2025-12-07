@@ -343,6 +343,23 @@ export default function App() {
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
 
+  // Initialize DB statistics
+  useEffect(() => {
+    const loadDBStats = async () => {
+      try {
+        const stats = await BackendAPI.getStatistics();
+        setDbTotalCount(stats.total_indexed_files);
+      } catch (error) {
+        console.error('DB 통계 로드 오류:', error);
+      }
+    };
+    
+    loadDBStats();
+    // 10초마다 DB 통계 업데이트
+    const statsInterval = setInterval(loadDBStats, 10000);
+    return () => clearInterval(statsInterval);
+  }, []);
+
   // Initialize drives and folder structure
   useEffect(() => {
     const initializeDrives = async () => {
@@ -780,6 +797,14 @@ export default function App() {
           try {
             const status = await BackendAPI.getIndexingStatus();
             setIndexingStats(status.stats);
+            
+            // DB 총 개수 업데이트
+            try {
+              const stats = await BackendAPI.getStatistics();
+              setDbTotalCount(stats.total_indexed_files);
+            } catch (error) {
+              console.error('통계 조회 오류:', error);
+            }
             
             // 로그 가져오기
             const logsResponse = await BackendAPI.getIndexingLogs(100);
@@ -1240,7 +1265,7 @@ export default function App() {
               <Pause size={14} className="mr-1" fill="currentColor"/> 중지
             </button>
             <span className={`px-2 ${isIndexing ? 'text-[#0078D7]' : 'text-gray-500'}`}>{indexingStatus}</span>
-            <span className="text-[#D0D0D0]">누적: 1,204 개</span>
+            <span className="text-[#D0D0D0]">인덱싱 DB 저장 파일 수: {dbTotalCount.toLocaleString()} 개</span>
           </div>
           <div className="flex space-x-4">
             {['ppt', 'doc', 'hwp', 'txt', 'pdf'].map(ext => (
@@ -1538,23 +1563,49 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                indexingLog.map((log, i) => (
-                  <div key={i} className="flex items-start gap-2 pb-1 border-b border-[#333]">
-                    <span className="text-gray-500 shrink-0">[{log.time}]</span>
-                    <span className={`shrink-0 font-bold ${
-                      log.status === 'Error' ? 'text-red-400' : 
-                      log.status === 'Skip' || log.status === 'Skipped' ? 'text-yellow-400' : 
-                      log.status === 'Indexing' ? 'text-blue-400' :
-                      log.status === 'Retry Success' ? 'text-cyan-400' :
-                      log.status === 'Info' ? 'text-purple-400' :
-                      'text-green-400'
-                    }`}>
-                      {log.status === 'Info' ? '📋' : log.status}
-                    </span>
-                    <span className="flex-1 truncate">{log.path}</span>
-                    <span className="text-gray-400 shrink-0 text-[10px]">{log.size}</span>
-                  </div>
-                ))
+                indexingLog.map((log, i) => {
+                  // DB 저장 완료 여부 확인
+                  const isDBSaved = log.size?.includes('✓ DB 저장 완료');
+                  const isDBPending = log.size?.includes('⊗ DB 저장 대기');
+                  
+                  return (
+                    <div key={i} className="flex items-center gap-2 pb-1 border-b border-[#333] hover:bg-[#2a2a2a]">
+                      <span className="text-gray-500 shrink-0 text-[10px]">[{log.time}]</span>
+                      <span className={`shrink-0 font-bold text-[10px] min-w-[80px] ${
+                        log.status === 'Error' ? 'text-red-400' : 
+                        log.status === 'Skip' || log.status === 'Skipped' ? 'text-yellow-400' : 
+                        log.status === 'Indexing' ? 'text-blue-400' :
+                        log.status === '파싱완료' ? 'text-cyan-400' :
+                        log.status === 'Retry Success' ? 'text-cyan-400' :
+                        log.status === 'Info' ? 'text-purple-400' :
+                        'text-green-400'
+                      }`}>
+                        {log.status === 'Info' ? '📋' : 
+                         log.status === 'Success' ? '✓ 완료' : 
+                         log.status === '파싱완료' ? '✓ 파싱' :
+                         log.status === 'Error' ? '✗' : 
+                         log.status === 'Indexing' ? '⟳ 처리중' : 
+                         log.status}
+                      </span>
+                      <span className="flex-1 truncate text-white text-[10px]" title={log.path}>{log.path}</span>
+                      {log.size && (
+                        <span className="shrink-0 text-gray-400 text-[9px]">
+                          {log.size}
+                        </span>
+                      )}
+                      {isDBSaved && (
+                        <span className="shrink-0 text-green-400 text-[9px] font-bold bg-green-900/20 px-1.5 py-0.5 rounded">
+                          ✓ DB완료
+                        </span>
+                      )}
+                      {isDBPending && (
+                        <span className="shrink-0 text-yellow-400 text-[9px] font-bold bg-yellow-900/20 px-1.5 py-0.5 rounded">
+                          ⊗ DB대기
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
