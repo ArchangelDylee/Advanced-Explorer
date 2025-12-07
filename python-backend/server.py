@@ -16,13 +16,7 @@ import io
 # ========================================
 # UTF-8 전역 설정 (최우선 실행)
 # ========================================
-# Python 표준 출력/에러 스트림을 UTF-8로 강제 설정
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
-# Windows 콘솔 코드 페이지를 UTF-8로 설정 (가능한 경우)
+# Windows 콘솔 코드 페이지를 UTF-8로 설정 (Python 실행 전 필수)
 if sys.platform == 'win32':
     try:
         import ctypes
@@ -31,6 +25,33 @@ if sys.platform == 'win32':
         kernel32.SetConsoleOutputCP(65001)  # UTF-8 출력
     except Exception:
         pass
+
+# Python 표준 출력/에러 스트림을 UTF-8로 강제 설정
+# Windows에서 chcp 65001 효과
+import locale
+try:
+    locale.setlocale(locale.LC_ALL, 'ko_KR.UTF-8')
+except:
+    try:
+        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+    except:
+        pass
+
+# stdout/stderr를 UTF-8로 재설정 (기존 버퍼 저장)
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
+
+try:
+    if hasattr(sys.stdout, 'buffer') and sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    sys.stdout = _original_stdout
+
+try:
+    if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    sys.stderr = _original_stderr
 
 from database import DatabaseManager
 from indexer import FileIndexer
@@ -96,25 +117,59 @@ def initialize():
 
 
 def cleanup():
-    """백엔드 종료 시 정리"""
+    """백엔드 종료 시 정리 - 쓰레드 안전 종료"""
     global indexer, db_manager
+    
+    logger.info("=" * 60)
+    logger.info("백엔드 종료 프로세스 시작...")
+    logger.info("=" * 60)
     
     try:
         if indexer:
-            # 재시도 워커 중지
-            indexer.stop_retry_worker()
-            
-            # 인덱싱 중지
+            # 1. 인덱싱 쓰레드 중지
             if indexer.is_running:
+                logger.info("인덱싱 쓰레드 중지 요청...")
                 indexer.stop_indexing()
+                
+                # 쓰레드가 종료될 때까지 대기 (최대 10초)
+                if indexer.current_thread and indexer.current_thread.is_alive():
+                    logger.info("인덱싱 쓰레드 종료 대기 중...")
+                    indexer.current_thread.join(timeout=10)
+                    
+                    if indexer.current_thread.is_alive():
+                        logger.warning("인덱싱 쓰레드가 10초 내에 종료되지 않았습니다. 강제 종료됩니다.")
+                    else:
+                        logger.info("✓ 인덱싱 쓰레드 정상 종료됨")
+            
+            # 2. 재시도 워커 쓰레드 중지
+            if indexer.retry_thread and indexer.retry_thread.is_alive():
+                logger.info("재시도 워커 쓰레드 중지 요청...")
+                indexer.stop_retry_worker()
+                
+                # 쓰레드가 종료될 때까지 대기 (최대 5초)
+                if indexer.retry_thread.is_alive():
+                    logger.info("재시도 워커 쓰레드 종료 대기 중...")
+                    indexer.retry_thread.join(timeout=5)
+                    
+                    if indexer.retry_thread.is_alive():
+                        logger.warning("재시도 워커 쓰레드가 5초 내에 종료되지 않았습니다. 강제 종료됩니다.")
+                    else:
+                        logger.info("✓ 재시도 워커 쓰레드 정상 종료됨")
         
+        # 3. 데이터베이스 연결 종료
         if db_manager:
+            logger.info("데이터베이스 연결 종료 중...")
             db_manager.close()
+            logger.info("✓ 데이터베이스 연결 종료됨")
         
-        logger.info("백엔드 정리 완료")
+        logger.info("=" * 60)
+        logger.info("✓ 백엔드 정리 완료")
+        logger.info("=" * 60)
     
     except Exception as e:
-        logger.error(f"정리 중 오류: {e}")
+        logger.error(f"정리 중 오류 발생: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 # ============== API 엔드포인트 ==============
@@ -548,6 +603,40 @@ def clear_exclusion_patterns():
         })
     except Exception as e:
         logger.error(f"제외 패턴 초기화 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/shutdown', methods=['POST'])
+def shutdown():
+    """
+    서버 종료 엔드포인트
+    
+    앱 종료 시 Electron에서 호출하여 백그라운드 쓰레드를 안전하게 종료합니다.
+    """
+    try:
+        logger.info("서버 종료 API 호출됨")
+        
+        # cleanup 함수 호출 (쓰레드 안전 종료)
+        cleanup()
+        
+        # Flask 서버 종료 (werkzeug 사용 시)
+        func = request.environ.get('werkzeug.server.shutdown')
+        if func is None:
+            # production 서버인 경우
+            logger.info("Production 모드: 수동으로 서버를 종료해주세요.")
+            return jsonify({
+                'status': 'cleanup_done',
+                'message': '백그라운드 쓰레드가 종료되었습니다. 서버는 수동으로 종료해주세요.'
+            })
+        
+        func()
+        return jsonify({
+            'status': 'shutdown',
+            'message': '서버가 종료되었습니다.'
+        })
+    
+    except Exception as e:
+        logger.error(f"서버 종료 오류: {e}")
         return jsonify({'error': str(e)}), 500
 
 

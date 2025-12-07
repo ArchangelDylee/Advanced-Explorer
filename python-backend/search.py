@@ -13,10 +13,28 @@ import io
 # ========================================
 # UTF-8 전역 설정 (최우선 실행)
 # ========================================
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# Windows 콘솔 코드 페이지를 UTF-8로 설정
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)
+        kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+
+# stdout/stderr를 UTF-8로 재설정 (안전하게)
+try:
+    if hasattr(sys.stdout, 'buffer') and sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass
+
+try:
+    if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass
 
 # 로그 디렉토리 생성
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')

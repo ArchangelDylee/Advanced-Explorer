@@ -116,12 +116,76 @@ app.on('window-all-closed', () => {
   }
 });
 
-// 앱 종료 전 Python 프로세스 종료
-app.on('before-quit', () => {
+// 앱 종료 전 Python 프로세스 안전하게 종료
+app.on('before-quit', async (event) => {
   if (pythonProcess) {
-    console.log('Python 백엔드 종료 중...');
-    pythonProcess.kill();
+    console.log('Python 백엔드 안전 종료 시작...');
+    
+    // 앱 종료를 일시 중단하고 백엔드를 안전하게 종료
+    event.preventDefault();
+    
+    try {
+      // 1. 백엔드 shutdown API 호출 (쓰레드 안전 종료)
+      const http = require('http');
+      
+      await new Promise((resolve, reject) => {
+        const shutdownTimeout = setTimeout(() => {
+          console.warn('백엔드 종료 API 타임아웃 (5초)');
+          reject(new Error('Shutdown API timeout'));
+        }, 5000); // 5초 타임아웃
+        
+        const options = {
+          hostname: '127.0.0.1',
+          port: 5000,
+          path: '/api/shutdown',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        };
+        
+        const req = http.request(options, (res) => {
+          console.log(`백엔드 shutdown API 응답: ${res.statusCode}`);
+          clearTimeout(shutdownTimeout);
+          resolve();
+        });
+        
+        req.on('error', (error) => {
+          console.error('백엔드 shutdown API 호출 오류:', error.message);
+          clearTimeout(shutdownTimeout);
+          reject(error);
+        });
+        
+        req.end();
+      });
+      
+      console.log('✓ 백엔드 안전 종료 완료');
+      
+    } catch (error) {
+      console.warn('백엔드 안전 종료 실패, 강제 종료 시도:', error.message);
+    }
+    
+    // 2. Python 프로세스 강제 종료 (안전 종료 실패 시 대비)
+    if (pythonProcess && !pythonProcess.killed) {
+      console.log('Python 프로세스 강제 종료...');
+      pythonProcess.kill('SIGTERM'); // 정상 종료 시그널
+      
+      // 1초 후에도 종료되지 않으면 SIGKILL
+      setTimeout(() => {
+        if (pythonProcess && !pythonProcess.killed) {
+          console.warn('Python 프로세스 SIGKILL로 강제 종료');
+          pythonProcess.kill('SIGKILL');
+        }
+      }, 1000);
+    }
+    
     pythonProcess = null;
+    
+    // 3. 앱 종료 재개
+    setTimeout(() => {
+      console.log('앱 종료');
+      app.quit();
+    }, 1500); // 1.5초 대기 후 앱 종료
   }
 });
 

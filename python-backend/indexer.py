@@ -71,10 +71,28 @@ import io
 # ========================================
 # UTF-8 전역 설정 (최우선 실행)
 # ========================================
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# Windows 콘솔 코드 페이지를 UTF-8로 설정
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)
+        kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+
+# stdout/stderr를 UTF-8로 재설정 (안전하게)
+try:
+    if hasattr(sys.stdout, 'buffer') and sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass
+
+try:
+    if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass
 
 # 로그 디렉토리 생성
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
@@ -222,6 +240,8 @@ class FileIndexer:
         # 로그 파일 경로
         self.skipcheck_file = os.path.join(self.log_dir, 'skipcheck.txt')
         self.error_file = os.path.join(self.log_dir, 'error.txt')
+        self.indexing_log_file = os.path.join(self.log_dir, 'indexing_log.txt')  # 통합 인덱싱 로그
+        self.indexed_file = os.path.join(self.log_dir, 'Indexed.txt')  # 성공한 인덱싱 결과
         
         # 사용자 정의 제외 패턴
         self.custom_excluded_patterns: List[str] = []
@@ -310,6 +330,79 @@ class FileIndexer:
         self.current_thread.start()
         return True
     
+    def _write_indexing_log(self, status: str, path: str, detail: str):
+        """
+        통합 인덱싱 로그 기록 (indexing_log.txt)
+        
+        Format: [Timestamp] Status | Path | Detail
+        
+        Args:
+            status: 상태 ('Indexing', 'Success', 'Skip', 'Error', 'Retry Success')
+            path: 파일 전체 경로
+            detail: 상세 정보
+        """
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            log_line = f"[{timestamp}] {status:15s} | {path} | {detail}\n"
+            
+            with open(self.indexing_log_file, 'a', encoding='utf-8') as f:
+                f.write(log_line)
+        
+        except Exception as e:
+            logger.error(f"통합 로그 기록 오류: {e}")
+    
+    def _write_indexed_file(self, path: str, char_count: int, token_count: int, content: str = None):
+        """
+        성공한 인덱싱 결과를 Indexed.txt에 기록
+        
+        Format: 
+        ================================================================================
+        [Timestamp] 
+        디렉토리: {directory}
+        파일명: {filename}
+        통계: {char_count}자 / {token_count}토큰
+        --------------------------------------------------------------------------------
+        [인덱스된 내용 미리보기 - 최대 500자]
+        {content_preview}
+        ================================================================================
+        
+        Args:
+            path: 파일 전체 경로
+            char_count: 추출된 문자 수
+            token_count: 토큰(단어) 수
+            content: 인덱스된 텍스트 내용 (선택사항)
+        """
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            directory = os.path.dirname(path)
+            filename = os.path.basename(path)
+            
+            # 로그 엔트리 작성
+            log_entry = f"\n{'='*80}\n"
+            log_entry += f"[{timestamp}]\n"
+            log_entry += f"디렉토리: {directory}\n"
+            log_entry += f"파일명: {filename}\n"
+            log_entry += f"통계: {char_count:,}자 / {token_count:,}토큰\n"
+            log_entry += f"{'-'*80}\n"
+            
+            # 내용 미리보기 (최대 500자)
+            if content:
+                preview_length = 500
+                content_preview = content[:preview_length]
+                if len(content) > preview_length:
+                    content_preview += "... (이하 생략)"
+                log_entry += f"[인덱스된 내용 미리보기]\n{content_preview}\n"
+            else:
+                log_entry += f"[내용 없음]\n"
+            
+            log_entry += f"{'='*80}\n"
+            
+            with open(self.indexed_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+        
+        except Exception as e:
+            logger.error(f"Indexed.txt 기록 오류: {e}")
+    
     def _log_skip(self, path: str, reason: str):
         """
         Skip 로그 기록 (skipcheck.txt 및 재시도 목록)
@@ -322,6 +415,9 @@ class FileIndexer:
             
             with open(self.skipcheck_file, 'a', encoding='utf-8') as f:
                 f.write(log_line)
+            
+            # 통합 로그에도 기록
+            self._write_indexing_log('Skip', path, reason)
             
             # 재시도 가능한 오류인 경우 목록에 추가
             retryable_reasons = [
@@ -364,6 +460,9 @@ class FileIndexer:
             
             with open(self.error_file, 'a', encoding='utf-8') as f:
                 f.write(error_msg)
+            
+            # 통합 로그에도 기록
+            self._write_indexing_log('Error', path, f"Error: {str(error)}")
             
             # 메모리에 로그 추가
             filename = os.path.basename(path)
@@ -457,19 +556,27 @@ class FileIndexer:
         
         return token_count
     
-    def _log_success(self, path: str, char_count: int, token_count: int = 0, db_saved: bool = True):
+    def _log_success(self, path: str, char_count: int, token_count: int = 0, db_saved: bool = True, content: str = None):
         """
-        성공 로그 (UI만)
+        성공 로그 (UI + 파일)
         
         Args:
             path: 파일 경로
             char_count: 추출된 문자 수
             token_count: 토큰(단어) 수
             db_saved: DB 저장 성공 여부
+            content: 인덱스된 텍스트 내용
         """
         filename = os.path.basename(path)
         db_status = "✓ DB 저장 완료" if db_saved else "⊗ DB 저장 대기"
         detail = f'{char_count:,}자 / {token_count:,}토큰 | {db_status}'
+        
+        # 통합 로그에 기록
+        self._write_indexing_log('Success', path, detail)
+        
+        # DB 저장이 완료된 경우에만 Indexed.txt에 기록
+        if db_saved:
+            self._write_indexed_file(path, char_count, token_count, content)
         
         # 메모리에 로그 추가
         self._add_log_to_memory('Success', filename, detail)
@@ -487,6 +594,9 @@ class FileIndexer:
         """
         filename = os.path.basename(path)
         detail = '처리 중...'
+        
+        # 통합 로그에 기록
+        self._write_indexing_log('Indexing', path, detail)
         
         # 메모리에 로그 추가
         self._add_log_to_memory('Indexing', filename, detail)
@@ -632,18 +742,16 @@ class FileIndexer:
                     token_count = self._count_tokens(content)
                     
                     if is_new:
-                        # 새 파일은 배치에 추가
+                        # 새 파일은 배치에 추가 (로그는 나중에)
                         batch.append((file_path, content, current_mtime))
                         self.stats['indexed_files'] += 1
-                        # DB 저장 대기 상태로 로그
-                        self._log_success(file_path, len(content), token_count, db_saved=False)
                     else:
                         # 수정된 파일은 즉시 업데이트
                         try:
                             self.db.update_file(file_path, content, current_mtime)
                             self.stats['indexed_files'] += 1
                             # DB 저장 완료 상태로 로그
-                            self._log_success(file_path, len(content), token_count, db_saved=True)
+                            self._log_success(file_path, len(content), token_count, db_saved=True, content=content)
                         except Exception as e:
                             logger.error(f"DB 업데이트 오류 [{file_path}]: {e}")
                             self._log_error(file_path, e)
@@ -657,7 +765,7 @@ class FileIndexer:
                             # 배치 저장 후 로그 업데이트
                             for saved_path, saved_content, _ in batch:
                                 saved_token_count = self._count_tokens(saved_content)
-                                self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True)
+                                self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
                             batch = []
                         except Exception as e:
                             logger.error(f"DB 배치 저장 오류: {e}")
@@ -682,7 +790,7 @@ class FileIndexer:
                 # 배치 저장 후 로그 업데이트
                 for saved_path, saved_content, _ in batch:
                     saved_token_count = self._count_tokens(saved_content)
-                    self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True)
+                    self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
             except Exception as e:
                 logger.error(f"DB 최종 배치 저장 오류: {e}")
     
@@ -1305,6 +1413,12 @@ class FileIndexer:
                             filename = os.path.basename(file_path)
                             db_status = "✓ DB 저장 완료 (재시도)"
                             detail = f'{len(content):,}자 / {token_count:,}토큰 | {db_status}'
+                            
+                            # 통합 로그에 기록
+                            self._write_indexing_log('Retry Success', file_path, detail)
+                            
+                            # Indexed.txt에 기록 (재시도 성공도 인덱싱 성공)
+                            self._write_indexed_file(file_path, len(content), token_count, content)
                             
                             self._add_log_to_memory('Retry Success', filename, detail)
                             

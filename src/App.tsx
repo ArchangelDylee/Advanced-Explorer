@@ -103,7 +103,7 @@ interface DeleteDialogState {
 interface IndexLogEntry {
   time: string;
   path: string;
-  status: 'Indexed' | 'Skipped' | 'Error';
+  status: 'Indexed' | 'Skipped' | 'Error' | 'Success' | 'Skip' | 'Indexing' | 'Retry Success' | 'Info';
   size: string;
 }
 
@@ -490,6 +490,18 @@ export default function App() {
     };
     setIndexingLog(prev => [newLog, ...prev].slice(0, 1000)); // 최대 1000개까지 유지
   };
+  
+  // 인덱싱 상태 메시지 추가 (간단한 텍스트)
+  const addIndexingMessage = (message: string) => {
+    const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    const newLog: IndexLogEntry = {
+      time,
+      path: message,
+      status: 'Info',
+      size: ''
+    };
+    setIndexingLog(prev => [newLog, ...prev].slice(0, 1000));
+  };
 
   // 유효한 파일/폴더 이름인지 확인 (특수 문자로 시작하는 것 제외)
   const isValidName = (name: string): boolean => {
@@ -748,20 +760,20 @@ export default function App() {
     const selectedDir = getSelectedDirectory();
     
     if (!selectedDir) {
-      addSearchLog('색인 시작 실패: 디렉토리가 선택되지 않았습니다');
+      addIndexingMessage('인덱싱 시작 실패: 디렉토리가 선택되지 않았습니다');
       return;
     }
 
     try {
       setIsIndexing(true);
-      setIndexingStatus('색인 시작 중...');
-      addSearchLog(`색인 시작: ${selectedDir}`);
+      setIndexingStatus('인덱싱 시작 중...');
+      addIndexingMessage(`인덱싱 시작: ${selectedDir}`);
       
       const response = await BackendAPI.startIndexing([selectedDir]);
       
       if (response.status === 'started') {
-        setIndexingStatus('색인 진행 중...');
-        addSearchLog('색인이 시작되었습니다');
+        setIndexingStatus('인덱싱 진행 중...');
+        addIndexingMessage('인덱싱이 시작되었습니다');
         
         // 주기적으로 상태 및 로그 확인
         const statusInterval = setInterval(async () => {
@@ -788,17 +800,17 @@ export default function App() {
               // 재시도 워커 상태 표시
               if (status.retry_worker?.is_running && status.retry_worker.pending_files > 0) {
                 setIndexingStatus(`대기 중 (재시도 ${status.retry_worker.pending_files}개)`);
-                addSearchLog(`색인 완료: 총 ${status.stats.indexed_files}개 파일`);
-                addSearchLog(`재시도 워커 시작: Skip된 ${status.retry_worker.pending_files}개 파일 ${Math.floor(status.retry_worker.interval_seconds / 60)}분마다 재시도`);
+                addIndexingMessage(`인덱싱 완료: 총 ${status.stats.indexed_files}개 파일`);
+                addIndexingMessage(`재시도 워커 시작: Skip된 ${status.retry_worker.pending_files}개 파일 ${Math.floor(status.retry_worker.interval_seconds / 60)}분마다 재시도`);
               } else {
                 setIndexingStatus('대기 중...');
-                addSearchLog(`색인 완료: 총 ${status.stats.indexed_files}개 파일`);
+                addIndexingMessage(`인덱싱 완료: 총 ${status.stats.indexed_files}개 파일`);
               }
             } else {
-              setIndexingStatus(`색인 중... (${status.stats.indexed_files}/${status.stats.total_files})`);
+              setIndexingStatus(`인덱싱 중... (${status.stats.indexed_files}/${status.stats.total_files})`);
             }
           } catch (error) {
-            console.error('색인 상태 확인 오류:', error);
+            console.error('인덱싱 상태 확인 오류:', error);
           }
         }, 1000); // 1초마다 상태 확인
         
@@ -806,8 +818,8 @@ export default function App() {
         throw new Error(response.message || '색인 시작 실패');
       }
     } catch (error) {
-      console.error('색인 시작 오류:', error);
-      addSearchLog(`색인 오류: ${error}`);
+      console.error('인덱싱 시작 오류:', error);
+      addIndexingMessage(`인덱싱 오류: ${error}`);
       setIsIndexing(false);
       setIndexingStatus('대기 중...');
     }
@@ -816,21 +828,21 @@ export default function App() {
   const handleIndexStop = async () => {
     try {
       setIsIndexStopping(true);
-      addSearchLog('색인 중지 요청...');
+      addIndexingMessage('인덱싱 중지 요청...');
       
       await BackendAPI.stopIndexing();
       
       setIsIndexing(false);
       setIsIndexStopping(false);
       setIndexingStatus('중지됨');
-      addSearchLog('색인이 중지되었습니다');
+      addIndexingMessage('인덱싱이 중지되었습니다');
       
       setTimeout(() => {
         setIndexingStatus('대기 중...');
       }, 2000);
     } catch (error) {
-      console.error('색인 중지 오류:', error);
-      addSearchLog(`색인 중지 오류: ${error}`);
+      console.error('인덱싱 중지 오류:', error);
+      addIndexingMessage(`인덱싱 중지 오류: ${error}`);
       setIsIndexStopping(false);
     }
   };
@@ -1210,13 +1222,21 @@ export default function App() {
             <button 
               onClick={handleIndexStart} 
               disabled={isIndexing || isIndexStopping} 
-              className={`flex items-center px-4 py-1.5 text-white border border-[#005A9E] rounded-sm active:scale-95 active:bg-[#005a9e] transition-all duration-100 ${isIndexing ? 'bg-[#005A9E] cursor-not-allowed' : 'bg-[#0067C0] hover:bg-[#0078D7]'}`}>
+              className={`flex items-center px-4 py-1.5 border rounded-sm transition-all duration-100 ${
+                isIndexing || isIndexStopping
+                  ? 'bg-[#333] text-[#666] border-[#444] cursor-not-allowed opacity-50' 
+                  : 'bg-[#0067C0] text-white border-[#005A9E] hover:bg-[#0078D7] active:scale-95 active:bg-[#005a9e]'
+              }`}>
               <Play size={14} className="mr-1" fill="currentColor"/> 시작
             </button>
             <button 
               onClick={handleIndexStop} 
               disabled={!isIndexing || isIndexStopping}
-              className={`flex items-center px-3 py-1.5 border border-[#444] rounded-sm active:scale-95 active:bg-[#1a1a1a] transition-all duration-100 ${!isIndexing ? 'bg-[#202020] text-[#999] cursor-not-allowed' : 'bg-[#202020] text-[#D0D0D0] hover:bg-[#333]'}`}>
+              className={`flex items-center px-3 py-1.5 border rounded-sm transition-all duration-100 ${
+                !isIndexing || isIndexStopping
+                  ? 'bg-[#202020] text-[#666] border-[#444] cursor-not-allowed opacity-50' 
+                  : 'bg-[#DC2626] text-white border-[#991B1B] hover:bg-[#EF4444] active:scale-95 active:bg-[#B91C1C]'
+              }`}>
               <Pause size={14} className="mr-1" fill="currentColor"/> 중지
             </button>
             <span className={`px-2 ${isIndexing ? 'text-[#0078D7]' : 'text-gray-500'}`}>{indexingStatus}</span>
@@ -1523,12 +1543,13 @@ export default function App() {
                     <span className="text-gray-500 shrink-0">[{log.time}]</span>
                     <span className={`shrink-0 font-bold ${
                       log.status === 'Error' ? 'text-red-400' : 
-                      log.status === 'Skip' ? 'text-yellow-400' : 
+                      log.status === 'Skip' || log.status === 'Skipped' ? 'text-yellow-400' : 
                       log.status === 'Indexing' ? 'text-blue-400' :
                       log.status === 'Retry Success' ? 'text-cyan-400' :
+                      log.status === 'Info' ? 'text-purple-400' :
                       'text-green-400'
                     }`}>
-                      {log.status}
+                      {log.status === 'Info' ? '📋' : log.status}
                     </span>
                     <span className="flex-1 truncate">{log.path}</span>
                     <span className="text-gray-400 shrink-0 text-[10px]">{log.size}</span>
