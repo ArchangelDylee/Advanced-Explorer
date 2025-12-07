@@ -360,6 +360,26 @@ export default function App() {
     return () => clearInterval(statsInterval);
   }, []);
 
+  // Auto-refresh indexing DB view every 1 minute
+  useEffect(() => {
+    if (!showIndexingLog) return;
+
+    const refreshDB = async () => {
+      try {
+        const dbResponse = await BackendAPI.getIndexedDatabase(1000, 0);
+        setIndexedDatabase(dbResponse.files);
+        setDbTotalCount(dbResponse.total_count);
+      } catch (error) {
+        console.error('DB 자동 새로고침 오류:', error);
+      }
+    };
+
+    // 1분(60초)마다 DB 조회
+    const dbRefreshInterval = setInterval(refreshDB, 60000);
+    
+    return () => clearInterval(dbRefreshInterval);
+  }, [showIndexingLog]);
+
   // Initialize drives and folder structure
   useEffect(() => {
     const initializeDrives = async () => {
