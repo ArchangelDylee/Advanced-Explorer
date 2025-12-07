@@ -117,7 +117,7 @@ def initialize():
 
 
 def cleanup():
-    """백엔드 종료 시 정리 - 쓰레드 안전 종료"""
+    """백엔드 종료 시 정리 - 쓰레드 안전 종료 및 파일 Lock 해제"""
     global indexer, db_manager
     
     logger.info("=" * 60)
@@ -125,51 +125,49 @@ def cleanup():
     logger.info("=" * 60)
     
     try:
+        # 1. 인덱서 리소스 정리
         if indexer:
-            # 1. 인덱싱 쓰레드 중지
-            if indexer.is_running:
-                logger.info("인덱싱 쓰레드 중지 요청...")
-                indexer.stop_indexing()
-                
-                # 쓰레드가 종료될 때까지 대기 (최대 10초)
-                if indexer.current_thread and indexer.current_thread.is_alive():
-                    logger.info("인덱싱 쓰레드 종료 대기 중...")
-                    indexer.current_thread.join(timeout=10)
-                    
-                    if indexer.current_thread.is_alive():
-                        logger.warning("인덱싱 쓰레드가 10초 내에 종료되지 않았습니다. 강제 종료됩니다.")
-                    else:
-                        logger.info("✓ 인덱싱 쓰레드 정상 종료됨")
-            
-            # 2. 재시도 워커 쓰레드 중지
-            if indexer.retry_thread and indexer.retry_thread.is_alive():
-                logger.info("재시도 워커 쓰레드 중지 요청...")
-                indexer.stop_retry_worker()
-                
-                # 쓰레드가 종료될 때까지 대기 (최대 5초)
-                if indexer.retry_thread.is_alive():
-                    logger.info("재시도 워커 쓰레드 종료 대기 중...")
-                    indexer.retry_thread.join(timeout=5)
-                    
-                    if indexer.retry_thread.is_alive():
-                        logger.warning("재시도 워커 쓰레드가 5초 내에 종료되지 않았습니다. 강제 종료됩니다.")
-                    else:
-                        logger.info("✓ 재시도 워커 쓰레드 정상 종료됨")
+            logger.info("인덱서 정리 중...")
+            indexer.cleanup()
+            logger.info("✓ 인덱서 정리 완료")
         
-        # 3. 데이터베이스 연결 종료
+        # 2. 데이터베이스 연결 종료 및 Lock 해제
         if db_manager:
             logger.info("데이터베이스 연결 종료 중...")
+            try:
+                # DB에 보류 중인 변경사항 커밋
+                if db_manager.conn:
+                    db_manager.conn.commit()
+                    logger.info("✓ DB 커밋 완료")
+            except Exception as e:
+                logger.warning(f"DB 커밋 오류 (무시됨): {e}")
+            
             db_manager.close()
             logger.info("✓ 데이터베이스 연결 종료됨")
         
-        logger.info("=" * 60)
-        logger.info("✓ 백엔드 정리 완료")
-        logger.info("=" * 60)
+        # 3. 로깅 핸들러 종료 및 Lock 해제
+        logger.info("로그 파일 핸들러 종료 중...")
+        try:
+            # 모든 로깅 핸들러 flush 및 close
+            for handler in logging.root.handlers[:]:  # 복사본으로 순회
+                try:
+                    handler.flush()
+                    handler.close()
+                    logging.root.removeHandler(handler)
+                except Exception as e:
+                    print(f"핸들러 종료 오류: {e}", file=sys.stderr)
+            logger.info("✓ 로그 파일 핸들러 종료됨")
+        except Exception as e:
+            print(f"로그 핸들러 종료 중 오류: {e}", file=sys.stderr)
+        
+        print("=" * 60)
+        print("✓ 백엔드 정리 완료 - 모든 파일 Lock 해제됨")
+        print("=" * 60)
     
     except Exception as e:
-        logger.error(f"정리 중 오류 발생: {e}")
+        print(f"정리 중 오류 발생: {e}", file=sys.stderr)
         import traceback
-        logger.error(traceback.format_exc())
+        print(traceback.format_exc(), file=sys.stderr)
 
 
 # ============== API 엔드포인트 ==============

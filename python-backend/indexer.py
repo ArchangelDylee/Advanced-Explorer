@@ -642,6 +642,32 @@ class FileIndexer:
             self.retry_thread.join(timeout=2)
             logger.info("재시도 워커 중지됨")
     
+    def cleanup(self):
+        """인덱서 리소스 정리 및 Lock 해제"""
+        logger.info("인덱서 리소스 정리 시작...")
+        
+        try:
+            # 1. 인덱싱 중지
+            if self.is_running:
+                self.stop_indexing()
+                if self.current_thread and self.current_thread.is_alive():
+                    self.current_thread.join(timeout=5)
+            
+            # 2. 재시도 워커 중지
+            self.stop_retry_worker()
+            
+            # 3. 메모리 정리
+            with self.skipped_files_lock:
+                self.skipped_files.clear()
+            
+            with self.indexing_logs_lock:
+                self.indexing_logs.clear()
+            
+            logger.info("✓ 인덱서 리소스 정리 완료")
+            
+        except Exception as e:
+            logger.error(f"인덱서 정리 중 오류: {e}")
+    
     def _indexing_worker(self, root_paths: List[str]):
         """인덱싱 워커 (백그라운드 쓰레드) - 증분 색인"""
         self.is_running = True

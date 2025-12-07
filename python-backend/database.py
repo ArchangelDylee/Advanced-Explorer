@@ -460,10 +460,23 @@ class DatabaseManager:
             logger.error(f"검색 히스토리 삭제 오류: {e}")
     
     def close(self):
-        """데이터베이스 연결 종료"""
+        """데이터베이스 연결 종료 및 Lock 해제"""
         if self.conn:
-            self.conn.close()
-            logger.info("데이터베이스 연결 종료")
+            try:
+                # 보류 중인 모든 변경사항 커밋
+                self.conn.commit()
+                logger.info("✓ DB 변경사항 커밋 완료")
+            except Exception as e:
+                logger.warning(f"DB 커밋 오류 (무시됨): {e}")
+            
+            try:
+                # 연결 종료
+                self.conn.close()
+                logger.info("✓ 데이터베이스 연결 종료 - Lock 해제됨")
+            except Exception as e:
+                logger.error(f"DB 연결 종료 오류: {e}")
+            finally:
+                self.conn = None
 
 
 # 테스트 코드
