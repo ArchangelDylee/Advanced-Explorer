@@ -733,7 +733,7 @@ class FileIndexer:
     
     def _process_files_incremental(self, all_files: List[str]):
         """증분 파일 처리 (New/Modified만)"""
-        batch_size = 100
+        batch_size = 20  # 20개 파일마다 DB Commit
         batch = []
         
         for i, file_path in enumerate(all_files):
