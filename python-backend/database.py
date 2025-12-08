@@ -82,17 +82,18 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             
-            # FTS5 가상 테이블 생성 (trigram 토크나이저 사용)
+            # FTS5 가상 테이블 생성 (unicode61 토크나이저 사용 - 한글 지원)
             # path: 파일 절대 경로 (검색 제외)
             # content: 파일 텍스트 내용 (검색 대상)
             # mtime: 마지막 수정 시간 (검색 제외, 증분 색인용)
+            # tokenize='unicode61': 유니코드 문자(한글, 영문, 숫자 등) 지원
             self.conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts 
                 USING fts5(
                     path UNINDEXED, 
                     content, 
                     mtime UNINDEXED, 
-                    tokenize='trigram'
+                    tokenize='unicode61'
                 )
             """)
             
@@ -206,6 +207,11 @@ class DatabaseManager:
         """
         전문 검색 (Full-Text Search)
         
+        검색 타입:
+        1. 단일 단어: "학교" → 학교를 포함
+        2. 복합 단어: "학교 경찰" → 학교 AND 경찰 모두 포함
+        3. 따옴표 문장: '"학교 경찰"' → 정확히 "학교 경찰" 포함
+        
         Args:
             query: 검색 쿼리
             limit: 최대 결과 개수
@@ -214,13 +220,16 @@ class DatabaseManager:
             검색 결과 리스트 [{path, content, mtime, rank}, ...]
         """
         try:
+            # FTS5 검색어 변환
+            fts_query = self._convert_to_fts5_query(query)
+            
             cursor = self.conn.execute("""
                 SELECT path, content, mtime, rank
                 FROM files_fts
                 WHERE files_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
-            """, (query, limit))
+            """, (fts_query, limit))
             
             results = []
             for row in cursor.fetchall():
@@ -231,12 +240,48 @@ class DatabaseManager:
                     'rank': row['rank']
                 })
             
-            logger.info(f"검색 완료: '{query}' - {len(results)}개 결과")
+            logger.info(f"검색 완료: '{query}' (FTS: '{fts_query}') - {len(results)}개 결과")
             return results
             
         except sqlite3.Error as e:
             logger.error(f"검색 오류: {e}")
             return []
+    
+    def _convert_to_fts5_query(self, query: str) -> str:
+        """
+        사용자 검색어를 FTS5 쿼리로 변환
+        
+        Args:
+            query: 원본 검색어
+        
+        Returns:
+            FTS5 MATCH 쿼리
+        """
+        import re
+        
+        # 1. 따옴표 문장 검색: "학교 경찰" → "학교 경찰" (FTS5 정확 일치)
+        if query.startswith('"') and query.endswith('"'):
+            # 이미 따옴표로 감싸져 있으면 그대로 사용
+            return query
+        
+        # 2. 복합 단어 검색: "학교 경찰" → 학교 AND 경찰
+        terms = query.split()
+        
+        if len(terms) == 1:
+            # 3. 단일 단어: "학교" → 학교
+            # FTS5 특수문자 이스케이프
+            escaped = re.sub(r'([-\(\)\[\]"\*])', r'\\\1', terms[0])
+            return escaped
+        else:
+            # 복합 단어 AND 조건
+            escaped_terms = []
+            for term in terms:
+                # FTS5 특수문자 이스케이프
+                escaped = re.sub(r'([-\(\)\[\]"\*])', r'\\\1', term)
+                escaped_terms.append(escaped)
+            
+            # FTS5 AND 구문
+            return ' AND '.join(escaped_terms)
     
     def get_file_mtime(self, path: str) -> Optional[float]:
         """
@@ -258,6 +303,20 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"mtime 조회 오류 [{path}]: {e}")
             return None
+    
+    def get_all_indexed_file_paths(self) -> List[str]:
+        """
+        인덱싱된 모든 파일 경로 조회 (삭제된 파일 정리용)
+        
+        Returns:
+            파일 경로 리스트
+        """
+        try:
+            cursor = self.conn.execute("SELECT path FROM files_fts")
+            return [row['path'] for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"인덱싱된 파일 경로 조회 오류: {e}")
+            return []
     
     def get_indexed_files_count(self) -> int:
         """인덱스된 파일 개수 조회"""

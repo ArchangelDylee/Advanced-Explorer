@@ -261,12 +261,12 @@ class UserActivityMonitor:
             elapsed = time.time() - self.last_activity_time
             return elapsed < self.idle_threshold
     
-    def wait_until_idle(self, check_interval: float = 1.0, stop_flag: threading.Event = None) -> bool:
+    def wait_until_idle(self, check_interval: float = 0.05, stop_flag: threading.Event = None) -> bool:
         """
         사용자가 유휴 상태가 될 때까지 대기
         
         Args:
-            check_interval: 체크 간격 (초)
+            check_interval: 체크 간격 (초) - 기본 0.05초로 매우 빠른 반응
             stop_flag: 중지 플래그 (인덱싱 중단 시 사용)
         
         Returns:
@@ -276,7 +276,7 @@ class UserActivityMonitor:
             if stop_flag and stop_flag.is_set():
                 return False
             
-            # 사용자 활동 중 - 대기
+            # 사용자 활동 중 - 대기 (매우 짧은 간격으로 체크)
             time.sleep(check_interval)
         
         return True
@@ -380,6 +380,13 @@ class FileIndexer:
         self.retry_stop_flag = threading.Event()
         self.retry_interval = 300  # 5분 (초 단위)
         
+        # 자동 인덱싱 스레드 (주기적 백그라운드 인덱싱)
+        self.auto_indexing_thread: Optional[threading.Thread] = None
+        self.auto_indexing_stop_flag = threading.Event()
+        self.auto_indexing_interval = 1800  # 30분 (초 단위)
+        self.auto_indexing_paths: List[str] = []  # 자동 인덱싱할 경로들
+        self.is_auto_indexing_enabled = False
+        
         # 인덱싱 로그 (메모리, 최근 500개)
         self.indexing_logs: List[Dict[str, str]] = []
         self.indexing_logs_lock = threading.Lock()
@@ -433,7 +440,8 @@ class FileIndexer:
     def start_indexing(self, root_paths: List[str], 
                       progress_callback: Optional[Callable] = None,
                       log_callback: Optional[Callable] = None,
-                      status_callback: Optional[Callable] = None):
+                      status_callback: Optional[Callable] = None,
+                      silent_mode: bool = False):
         """
         비동기 인덱싱 시작
         
@@ -442,6 +450,7 @@ class FileIndexer:
             progress_callback: 진행 상황 콜백 (current, total, path)
             log_callback: 로그 콜백 (status, filename, detail)
             status_callback: 상태 콜백 (status_text)
+            silent_mode: Silent 모드 (자동 인덱싱용, 로그 최소화)
         """
         if self.is_running:
             logger.warning("인덱싱이 이미 실행 중입니다.")
@@ -455,7 +464,7 @@ class FileIndexer:
         # Worker 쓰레드에서 실행
         self.current_thread = threading.Thread(
             target=self._indexing_worker,
-            args=(root_paths,),
+            args=(root_paths, silent_mode),
             daemon=True
         )
         self.current_thread.start()
@@ -567,8 +576,7 @@ class FileIndexer:
                         }
             
             # 메모리에 로그 추가
-            filename = os.path.basename(path)
-            self._add_log_to_memory('Skip', filename, reason)
+            self._add_log_to_memory('Skip', path, reason)
             
             # UI 로그 콜백
             if self.log_callback:
@@ -597,8 +605,7 @@ class FileIndexer:
             self._write_indexing_log('Error', path, f"Error: {str(error)}")
             
             # 메모리에 로그 추가
-            filename = os.path.basename(path)
-            self._add_log_to_memory('Error', filename, str(error))
+            self._add_log_to_memory('Error', path, str(error))
             
             # UI 로그 콜백
             if self.log_callback:
@@ -607,20 +614,21 @@ class FileIndexer:
         except Exception as e:
             logger.error(f"에러 로그 기록 오류: {e}")
     
-    def _add_log_to_memory(self, status: str, filename: str, detail: str):
+    def _add_log_to_memory(self, status: str, path: str, detail: str):
         """
         메모리에 로그 추가 (API 조회용)
         
         Args:
             status: 상태 ('Success', 'Skip', 'Error', 'Indexing', 'Retry Success')
-            filename: 파일명
+            path: 파일 전체 경로
             detail: 상세 정보
         """
         with self.indexing_logs_lock:
             log_entry = {
                 'time': datetime.now().strftime('%H:%M:%S'),
                 'status': status,
-                'filename': filename,
+                'path': path,  # 전체 경로 저장
+                'filename': os.path.basename(path),  # 파일명도 별도로 저장
                 'detail': detail
             }
             self.indexing_logs.insert(0, log_entry)  # 최신 로그를 앞에
@@ -728,7 +736,7 @@ class FileIndexer:
             self._write_indexed_file(path, char_count, token_count, content)
         
         # 메모리에 로그 추가
-        self._add_log_to_memory('Success', filename, detail)
+        self._add_log_to_memory('Success', path, detail)
         
         # UI 콜백
         if self.log_callback:
@@ -752,7 +760,7 @@ class FileIndexer:
         self._write_indexing_log('Indexing', path, detail)
         
         # 메모리에 로그 추가
-        self._add_log_to_memory('Indexing', filename, detail)
+        self._add_log_to_memory('Indexing', path, detail)
         
         # UI 콜백
         if self.log_callback:
@@ -830,6 +838,140 @@ class FileIndexer:
             self.retry_thread.join(timeout=2)
             logger.info("재시도 워커 중지됨")
     
+    # ========================================
+    # 자동 인덱싱 (주기적 백그라운드)
+    # ========================================
+    
+    def start_auto_indexing(self, paths: List[str], interval_minutes: int = 30):
+        """
+        자동 인덱싱 시작 (주기적으로 변경사항 자동 반영)
+        
+        Args:
+            paths: 자동 인덱싱할 경로 목록
+            interval_minutes: 인덱싱 주기 (분 단위, 기본: 30분)
+        """
+        if self.is_auto_indexing_enabled:
+            logger.warning("자동 인덱싱이 이미 실행 중입니다.")
+            return
+        
+        self.auto_indexing_paths = paths
+        self.auto_indexing_interval = interval_minutes * 60  # 분 -> 초
+        self.auto_indexing_stop_flag.clear()
+        self.is_auto_indexing_enabled = True
+        
+        self.auto_indexing_thread = threading.Thread(target=self._auto_indexing_worker, daemon=True)
+        self.auto_indexing_thread.start()
+        
+        logger.info(f"🤖 자동 인덱싱 시작 (주기: {interval_minutes}분)")
+        logger.info(f"   감시 경로: {paths}")
+    
+    def stop_auto_indexing(self):
+        """자동 인덱싱 중지"""
+        if not self.is_auto_indexing_enabled:
+            return
+        
+        logger.info("자동 인덱싱 중지 요청...")
+        self.auto_indexing_stop_flag.set()
+        self.is_auto_indexing_enabled = False
+        
+        if self.auto_indexing_thread and self.auto_indexing_thread.is_alive():
+            self.auto_indexing_thread.join(timeout=3)
+        
+        logger.info("자동 인덱싱 중지됨")
+    
+    def _auto_indexing_worker(self):
+        """자동 인덱싱 워커 스레드 - 주기적으로 변경사항 감지 및 인덱싱"""
+        logger.info("🤖 자동 인덱싱 워커 시작")
+        
+        # 첫 실행은 5분 후부터 시작
+        initial_delay = 300  # 5분
+        
+        if self._wait_with_interrupt(initial_delay):
+            return  # 중지 요청됨
+        
+        while not self.auto_indexing_stop_flag.is_set():
+            try:
+                # 수동 인덱싱이 실행 중이면 대기
+                if self.is_running:
+                    logger.debug("🤖 자동 인덱싱: 수동 인덱싱 실행 중 - 대기")
+                    if self._wait_with_interrupt(60):  # 1분 대기
+                        break
+                    continue
+                
+                logger.info("========================================")
+                logger.info("🤖 자동 인덱싱 시작 (Silent Mode)")
+                logger.info("========================================")
+                
+                # 삭제된 파일 정리
+                self._cleanup_deleted_files()
+                
+                # 증분 인덱싱 실행 (변경/추가 파일만)
+                if self.auto_indexing_paths:
+                    self.start_indexing(self.auto_indexing_paths, silent_mode=True)
+                    
+                    # 인덱싱 완료 대기
+                    while self.is_running and not self.auto_indexing_stop_flag.is_set():
+                        time.sleep(1)
+                
+                logger.info("🤖 자동 인덱싱 완료 - 다음 실행까지 대기")
+                
+                # 다음 주기까지 대기
+                if self._wait_with_interrupt(self.auto_indexing_interval):
+                    break
+                
+            except Exception as e:
+                logger.error(f"자동 인덱싱 워커 오류: {e}")
+                logger.error(traceback.format_exc())
+                # 오류 발생 시 5분 대기 후 재시도
+                if self._wait_with_interrupt(300):
+                    break
+        
+        logger.info("🤖 자동 인덱싱 워커 종료")
+    
+    def _wait_with_interrupt(self, seconds: int) -> bool:
+        """
+        지정된 시간 동안 대기, 중간에 중지 플래그 확인
+        
+        Returns:
+            True면 중지 요청됨, False면 정상 대기 완료
+        """
+        elapsed = 0
+        check_interval = 1  # 1초마다 체크
+        
+        while elapsed < seconds:
+            if self.auto_indexing_stop_flag.is_set():
+                return True
+            time.sleep(min(check_interval, seconds - elapsed))
+            elapsed += check_interval
+        
+        return False
+    
+    def _cleanup_deleted_files(self):
+        """DB에서 삭제된 파일 제거"""
+        try:
+            logger.info("🗑️ 삭제된 파일 정리 시작...")
+            
+            # DB에서 모든 인덱싱된 파일 경로 가져오기
+            indexed_files = self.db.get_all_indexed_file_paths()
+            
+            deleted_count = 0
+            for file_path in indexed_files:
+                # 파일이 실제로 존재하는지 확인
+                if not os.path.exists(file_path):
+                    logger.info(f"🗑️ 삭제된 파일 제거: {file_path}")
+                    self.db.delete_file(file_path)
+                    deleted_count += 1
+            
+            if deleted_count > 0:
+                logger.info(f"✅ 삭제된 파일 {deleted_count}개 제거 완료")
+                self.stats['deleted_files'] += deleted_count
+            else:
+                logger.debug("✅ 삭제된 파일 없음")
+        
+        except Exception as e:
+            logger.error(f"삭제된 파일 정리 오류: {e}")
+            logger.error(traceback.format_exc())
+    
     def cleanup(self):
         """인덱서 리소스 정리 및 Lock 해제 - 강화된 종료 보장"""
         logger.info("========================================")
@@ -837,14 +979,19 @@ class FileIndexer:
         logger.info("========================================")
         
         try:
-            # 0단계: 사용자 활동 모니터 중지
+            # 0단계: 자동 인덱싱 및 사용자 활동 모니터 중지
+            if self.is_auto_indexing_enabled:
+                logger.info("0단계-1: 자동 인덱싱 중지...")
+                self.stop_auto_indexing()
+            
             if self.activity_monitor:
-                logger.info("0단계: 사용자 활동 모니터 중지...")
+                logger.info("0단계-2: 사용자 활동 모니터 중지...")
                 self.activity_monitor.stop()
             
             # 1단계: stop_flag 설정
             self.stop_flag.set()
             self.retry_stop_flag.set()
+            self.auto_indexing_stop_flag.set()
             logger.info("1단계: 모든 stop_flag 설정 완료")
             
             # 2단계: 재시도 워커 강제 종료 (우선 처리)
@@ -904,9 +1051,10 @@ class FileIndexer:
             logger.error(f"❌ 인덱서 정리 중 오류: {e}")
             logger.error(traceback.format_exc())
     
-    def _indexing_worker(self, root_paths: List[str]):
+    def _indexing_worker(self, root_paths: List[str], silent_mode: bool = False):
         """인덱싱 워커 (백그라운드 쓰레드) - 증분 색인"""
         self.is_running = True
+        self.silent_mode = silent_mode  # Silent 모드 플래그 저장
         self.stats = {
             'total_files': 0,
             'indexed_files': 0,
@@ -991,7 +1139,7 @@ class FileIndexer:
         batch = []
         last_progress_time = time.time()
         stall_warning_threshold = 120  # 2분 동안 진행 없으면 경고
-        file_delay = 0.1  # 파일 처리 간 0.1초 지연 (CPU 부하 감소)
+        file_delay = 0.01  # 파일 처리 간 0.01초 지연 (즉각적인 활동 감지)
         
         for i, file_path in enumerate(all_files):
             if self.stop_flag.is_set():
@@ -1003,26 +1151,27 @@ class FileIndexer:
             # 사용자 활동 체크 - 키보드/마우스 입력 감지 시 대기
             if self.activity_monitor and self.enable_activity_monitor:
                 if self.activity_monitor.is_user_active():
-                    # 사용자 활동 감지 - 일시정지
+                    # 사용자 활동 감지 - 즉시 일시정지
                     self.stats['paused_count'] += 1
                     idle_time = self.activity_monitor.get_idle_time()
-                    logger.info(f"사용자 활동 감지 (마지막 활동: {idle_time:.1f}초 전) - 인덱싱 일시정지")
-                    self._update_status(f"사용자 활동 감지 - 2초 대기 중...")
+                    logger.info(f"⏸️ 사용자 활동 감지 (즉시 중단) - 2초 대기 중...")
+                    self._update_status(f"⏸️ 사용자 작업 중 - 2초 대기 중...")
                     
                     # UI 로그
                     if self.log_callback:
-                        self.log_callback('Info', '일시정지', '사용자 활동 감지 - 2초 대기 중')
+                        self.log_callback('Info', '일시정지', '⏸️ 사용자 작업 중 - 2초 대기')
                     
                     # 유휴 상태가 될 때까지 대기 (2초 동안 입력 없을 때까지)
-                    if not self.activity_monitor.wait_until_idle(check_interval=0.5, stop_flag=self.stop_flag):
+                    # check_interval을 0.1초로 줄여서 더 즉각적으로 반응
+                    if not self.activity_monitor.wait_until_idle(check_interval=0.1, stop_flag=self.stop_flag):
                         # 중지 요청됨
                         break
                     
                     # 재개
-                    logger.info("사용자 활동 없음 (2초 경과) - 인덱싱 재개")
-                    self._update_status("인덱싱 재개 중...")
+                    logger.info("▶️ 사용자 활동 없음 (2초 경과) - 인덱싱 재개")
+                    self._update_status("▶️ 인덱싱 재개 중...")
                     if self.log_callback:
-                        self.log_callback('Info', '재개', '인덱싱 재개됨')
+                        self.log_callback('Info', '재개', '▶️ 인덱싱 재개됨')
             
             # 진행 상황 체크 (2분 이상 멈춤 감지)
             current_time = time.time()
@@ -1038,13 +1187,9 @@ class FileIndexer:
                 if self.progress_callback:
                     self.progress_callback(i + 1, len(all_files), file_path)
                 
-                # 파일 잠금 체크 (사용자가 파일을 열어서 사용 중인지)
-                if self._is_file_locked(file_path):
-                    self._log_skip(file_path, "File is open by user - will retry later")
-                    self.stats['skipped_files'] += 1
-                    # 재시도 목록에 추가
-                    self._add_to_retry_queue(file_path, "File is open by user")
-                    continue
+                # 파일 잠금 체크 제거 - 임시 파일 복사로 처리하므로 불필요
+                # 각 파일 타입의 extract 함수가 _copy_to_temp를 사용하여
+                # 사용자가 열어둔 파일도 안전하게 인덱싱합니다
                 
                 # 파일 크기 체크 (100MB 초과 시 스킵)
                 try:
@@ -1383,10 +1528,10 @@ class FileIndexer:
     
     def _copy_to_temp(self, file_path: str) -> Optional[str]:
         """
-        파일을 임시 폴더에 복사
+        파일을 임시 폴더에 복사 (강제 복사)
         
-        사용자가 열어서 사용 중인 파일을 건드리지 않기 위해
-        복사본을 만들어서 인덱싱합니다.
+        🔥 핵심: 사용자가 열어서 사용 중인 파일도 강제로 읽기 전용 복사!
+        임시 복사본을 만들어서 인덱싱하므로 원본 파일은 절대 건드리지 않습니다.
         
         Args:
             file_path: 원본 파일 경로
@@ -1395,11 +1540,6 @@ class FileIndexer:
             임시 파일 경로 또는 None (복사 실패 시)
         """
         try:
-            # 파일이 잠겨있는지 먼저 체크
-            if self._is_file_locked(file_path):
-                logger.info(f"⛔ 파일이 잠겨있어 복사 불가: {os.path.basename(file_path)}")
-                return None
-            
             # 임시 디렉토리 생성
             temp_dir = tempfile.mkdtemp(prefix='indexer_')
             
@@ -1407,11 +1547,29 @@ class FileIndexer:
             filename = os.path.basename(file_path)
             temp_file_path = os.path.join(temp_dir, filename)
             
-            # 파일 복사
-            shutil.copy2(file_path, temp_file_path)
-            
-            logger.debug(f"임시 파일 복사 완료: {filename}")
-            return temp_file_path
+            # 방법 1: shutil.copy2 시도 (가장 빠름)
+            try:
+                shutil.copy2(file_path, temp_file_path)
+                logger.debug(f"✅ 임시 파일 복사 완료 (shutil): {filename}")
+                return temp_file_path
+            except (PermissionError, IOError) as e:
+                # 방법 2: 바이너리 읽기 모드로 직접 복사 (더 강력)
+                logger.debug(f"shutil 복사 실패, 직접 읽기 시도: {filename}")
+                try:
+                    with open(file_path, 'rb') as src:
+                        data = src.read()
+                    with open(temp_file_path, 'wb') as dst:
+                        dst.write(data)
+                    logger.debug(f"✅ 임시 파일 복사 완료 (직접 읽기): {filename}")
+                    return temp_file_path
+                except Exception as e2:
+                    logger.info(f"⛔ 파일 복사 완전 실패 - Skip: {filename} (원인: {e2})")
+                    # 임시 디렉토리 정리
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+                    return None
             
         except Exception as e:
             logger.debug(f"임시 파일 복사 실패 [{file_path}]: {e}")
@@ -1638,11 +1796,19 @@ class FileIndexer:
             
         except Exception as e:
             error_msg = str(e).lower()
-            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
-                logger.info(f"⛔ DOCX 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
-                self._log_skip(file_path, "파일 접근 불가")
+            filename = os.path.basename(file_path)
+            
+            # 암호화/손상된 파일 = 영구 Skip (재시도 X)
+            if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'bad zipfile']):
+                logger.info(f"⛔ DOCX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
+                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+            # 접근 불가 파일 = 나중에 재시도
+            elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ DOCX 파일 접근 불가 - 나중에 재시도: {filename}")
+                self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
+                self._add_to_retry_queue(file_path, "파일 접근 불가")
             else:
-                logger.debug(f"DOCX 추출 오류 [{file_path}]: {e}")
+                logger.debug(f"DOCX 추출 오류 [{filename}]: {e}")
             return None
             
         finally:
@@ -1681,11 +1847,19 @@ class FileIndexer:
             
         except Exception as e:
             error_msg = str(e).lower()
-            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
-                logger.info(f"⛔ PPTX 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
-                self._log_skip(file_path, "파일 접근 불가")
+            filename = os.path.basename(file_path)
+            
+            # 암호화/손상된 PPTX = 영구 Skip
+            if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'bad zipfile']):
+                logger.info(f"⛔ PPTX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
+                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+            # 접근 불가 = 재시도
+            elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ PPTX 파일 접근 불가 - 나중에 재시도: {filename}")
+                self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
+                self._add_to_retry_queue(file_path, "파일 접근 불가")
             else:
-                logger.debug(f"PPTX 추출 오류 [{file_path}]: {e}")
+                logger.debug(f"PPTX 추출 오류 [{filename}]: {e}")
             return None
             
         finally:
@@ -1871,11 +2045,19 @@ class FileIndexer:
             
         except Exception as e:
             error_msg = str(e).lower()
-            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
-                logger.info(f"⛔ XLSX 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
-                self._log_skip(file_path, "파일 접근 불가")
+            filename = os.path.basename(file_path)
+            
+            # 암호화/손상된 Excel = 영구 Skip
+            if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'bad zipfile']):
+                logger.info(f"⛔ XLSX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
+                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+            # 접근 불가 = 재시도
+            elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ XLSX 파일 접근 불가 - 나중에 재시도: {filename}")
+                self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
+                self._add_to_retry_queue(file_path, "파일 접근 불가")
             else:
-                logger.debug(f"XLSX 추출 오류 [{file_path}]: {e}")
+                logger.debug(f"XLSX 추출 오류 [{filename}]: {e}")
             return None
             
         finally:
@@ -1991,7 +2173,20 @@ class FileIndexer:
             return '\n'.join(text_parts)[:100000]
             
         except Exception as e:
-            logger.debug(f"PDF 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            filename = os.path.basename(file_path)
+            
+            # 암호화/손상된 PDF = 영구 Skip
+            if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'damaged']):
+                logger.info(f"⛔ PDF 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
+                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+            # 접근 불가 = 재시도
+            elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ PDF 파일 접근 불가 - 나중에 재시도: {filename}")
+                self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
+                self._add_to_retry_queue(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"PDF 추출 오류 [{filename}]: {e}")
             return None
             
         finally:
@@ -2002,12 +2197,14 @@ class FileIndexer:
     def _extract_hwp(self, file_path: str) -> Optional[str]:
         """
         HWP 파일에서 텍스트 추출
-        1차: pywin32 COM 객체 시도 (임시 파일 사용)
+        1차: pywin32 COM 객체 시도 (임시 파일 사용 + 타임아웃)
         2차: olefile 라이브러리 시도
         
         🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        ⏱️ 타임아웃: 30초 이상 걸리면 자동 Skip
         """
         temp_file = None
+        hwp_timeout = 30  # HWP 파일 처리 타임아웃: 30초
         
         # 1차 시도: COM 객체 (가장 정확)
         if WIN32COM_AVAILABLE:
@@ -2020,43 +2217,73 @@ class FileIndexer:
                     self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
                     return None
                 
-                pythoncom.CoInitialize()
+                # COM 작업을 스레드에서 실행하여 타임아웃 적용
+                result_container = [None]
+                error_container = [None]
                 
-                # DispatchEx로 완전히 새로운 한글 인스턴스 생성 (사용자 한글과 격리)
-                hwp = win32com.client.DispatchEx("HWPFrame.HwpObject")
-                hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
-                hwp.Open(temp_file)  # 임시 파일 사용!
+                def hwp_extract_thread():
+                    try:
+                        pythoncom.CoInitialize()
+                        
+                        # DispatchEx로 완전히 새로운 한글 인스턴스 생성 (사용자 한글과 격리)
+                        hwp = win32com.client.DispatchEx("HWPFrame.HwpObject")
+                        hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
+                        hwp.Open(temp_file)  # 임시 파일 사용!
+                        
+                        hwp.InitScan()
+                        text_parts = []
+                        
+                        while True:
+                            text = hwp.GetText()
+                            if not text:
+                                break
+                            text_parts.append(text)
+                        
+                        hwp.ReleaseScan()
+                        hwp.Quit()
+                        
+                        pythoncom.CoUninitialize()
+                        
+                        result_container[0] = ''.join(text_parts)[:100000]
+                        
+                    except Exception as e:
+                        error_container[0] = e
+                        try:
+                            hwp.Quit()
+                        except:
+                            pass
+                        try:
+                            pythoncom.CoUninitialize()
+                        except:
+                            pass
                 
-                hwp.InitScan()
-                text_parts = []
+                # 스레드 시작 및 타임아웃 대기
+                import threading
+                thread = threading.Thread(target=hwp_extract_thread, daemon=True)
+                thread.start()
+                thread.join(timeout=hwp_timeout)
                 
-                while True:
-                    text = hwp.GetText()
-                    if not text:
-                        break
-                    text_parts.append(text)
+                if thread.is_alive():
+                    # 타임아웃 발생
+                    logger.warning(f"⏰ HWP 파일 처리 타임아웃 ({hwp_timeout}초) - Skip: {os.path.basename(file_path)}")
+                    self._log_skip(file_path, f"HWP 파일 처리 타임아웃 ({hwp_timeout}초)")
+                    if temp_file:
+                        self._cleanup_temp(temp_file)
+                    return None
                 
-                hwp.ReleaseScan()
-                hwp.Quit()
+                # 오류 확인
+                if error_container[0]:
+                    raise error_container[0]
                 
-                pythoncom.CoUninitialize()
-                
-                logger.info(f"✅ HWP 파일 인덱싱 완료 (임시 복사본 사용): {os.path.basename(file_path)}")
-                
-                result = ''.join(text_parts)[:100000]
-                
-                # 임시 파일 정리
-                if temp_file:
-                    self._cleanup_temp(temp_file)
-                
-                return result
+                # 성공
+                if result_container[0]:
+                    logger.info(f"✅ HWP 파일 인덱싱 완료 (임시 복사본 사용): {os.path.basename(file_path)}")
+                    if temp_file:
+                        self._cleanup_temp(temp_file)
+                    return result_container[0]
                 
             except Exception as e:
                 logger.debug(f"HWP COM 추출 오류 [{file_path}]: {e}")
-                try:
-                    hwp.Quit()
-                except:
-                    pass
                 try:
                     pythoncom.CoUninitialize()
                 except:
@@ -2166,13 +2393,13 @@ class FileIndexer:
                 # 사용자 활동 체크 (재시도 워커에도 적용)
                 if self.activity_monitor and self.enable_activity_monitor:
                     if self.activity_monitor.is_user_active():
-                        # 사용자 활동 감지 - 대기
-                        logger.debug(f"재시도 워커: 사용자 활동 감지 - 대기 중...")
-                        # 유휴 상태가 될 때까지 대기
-                        if not self.activity_monitor.wait_until_idle(check_interval=0.5, stop_flag=self.retry_stop_flag):
+                        # 사용자 활동 감지 - 즉시 대기
+                        logger.debug(f"⏸️ 재시도 워커: 사용자 작업 중 - 대기...")
+                        # 유휴 상태가 될 때까지 대기 (더 짧은 체크 간격)
+                        if not self.activity_monitor.wait_until_idle(check_interval=0.1, stop_flag=self.retry_stop_flag):
                             # 중지 요청됨
                             break
-                        logger.debug("재시도 워커: 사용자 활동 없음 - 재개")
+                        logger.debug("▶️ 재시도 워커: 사용자 활동 없음 - 재개")
                 
                 try:
                     # 파일이 존재하는지 확인
@@ -2234,7 +2461,7 @@ class FileIndexer:
                             # Indexed.txt에 기록 (재시도 성공도 인덱싱 성공)
                             self._write_indexed_file(file_path, len(content), token_count, content)
                             
-                            self._add_log_to_memory('Retry Success', filename, detail)
+                            self._add_log_to_memory('Retry Success', file_path, detail)
                             
                             if self.log_callback:
                                 self.log_callback('Retry Success', filename, detail)

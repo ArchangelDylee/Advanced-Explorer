@@ -111,6 +111,11 @@ class SearchEngine:
             content_results = self.search(query, max_results, include_content=True)
             for result in content_results:
                 path = result['path']
+                
+                # search_path가 지정된 경우 해당 경로의 파일만 포함
+                if search_path and not path.lower().startswith(search_path.lower()):
+                    continue
+                
                 if path in results:
                     # 중복: DB 결과로 대체 (우선순위)
                     results[path] = {
@@ -126,11 +131,14 @@ class SearchEngine:
                     }
             
             # 3. 결과 정렬 (DB 우선, rank 순)
+            # FTS5 rank: 낮을수록 관련도 높음 (음수 값)
+            # 파일시스템 rank: 높을수록 우선순위 높음 (1.0=파일, 0.5=폴더)
             sorted_results = sorted(
                 results.values(),
                 key=lambda x: (
-                    0 if x['indexed'] else 1,  # indexed 우선
-                    x.get('rank', 0)  # rank 순
+                    0 if x['indexed'] else 1,  # indexed 우선 (DB 결과 먼저)
+                    x.get('rank', 999),  # rank 오름차순 (낮을수록 우선)
+                    x.get('name', '').lower()  # 이름순 (동일 rank인 경우)
                 )
             )
             
@@ -144,6 +152,11 @@ class SearchEngine:
         """
         파일 시스템에서 파일명 검색 (재귀적)
         
+        검색 타입:
+        1. 단일 단어: "학교" → 학교를 포함하는 파일/폴더
+        2. 복합 단어: "학교 경찰" → 학교 AND 경찰 모두 포함
+        3. 따옴표 문장: '"학교 경찰"' → 정확히 "학교 경찰" 포함
+        
         Args:
             query: 검색 쿼리
             root_path: 검색 루트 경로
@@ -152,20 +165,71 @@ class SearchEngine:
             파일명 검색 결과
         """
         results = []
-        query_lower = query.lower()
+        
+        # 검색 타입 파악
+        is_exact_match = query.startswith('"') and query.endswith('"')
+        
+        if is_exact_match:
+            # 따옴표 제거
+            search_term = query.strip('"').lower()
+            match_type = "정확한 문장"
+        else:
+            # 공백으로 분리 (AND 조건)
+            search_terms = [term.lower() for term in query.split() if term.strip()]
+            match_type = "단어 일치" if len(search_terms) == 1 else f"복합 검색 ({len(search_terms)}개 단어 모두 포함)"
         
         try:
             for dirpath, dirnames, filenames in os.walk(root_path):
                 # 특수 문자로 시작하는 디렉토리 제외
                 dirnames[:] = [d for d in dirnames if d[0].isalnum() or ord(d[0]) >= 0xAC00]
                 
+                # 폴더명도 검색 대상에 포함
+                for dirname in dirnames:
+                    name_lower = dirname.lower()
+                    matched = False
+                    
+                    if is_exact_match:
+                        # 정확한 문장 일치
+                        matched = search_term in name_lower
+                    else:
+                        # 모든 검색어 포함 (AND 조건)
+                        matched = all(term in name_lower for term in search_terms)
+                    
+                    if matched:
+                        dir_path = os.path.join(dirpath, dirname)
+                        try:
+                            stat = os.stat(dir_path)
+                            mtime_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
+                            results.append({
+                                'path': dir_path,
+                                'name': dirname,
+                                'directory': dirpath,
+                                'extension': 'folder',
+                                'size': 0,
+                                'mtime': mtime_iso,
+                                'rank': 0.5,  # 폴더는 약간 낮은 우선순위
+                                'preview': f'폴더명 {match_type}: {dirname}'
+                            })
+                        except Exception:
+                            pass
+                
+                # 파일명 검색
                 for filename in filenames:
-                    if query_lower in filename.lower():
+                    name_lower = filename.lower()
+                    matched = False
+                    
+                    if is_exact_match:
+                        # 정확한 문장 일치
+                        matched = search_term in name_lower
+                    else:
+                        # 모든 검색어 포함 (AND 조건)
+                        matched = all(term in name_lower for term in search_terms)
+                    
+                    if matched:
                         file_path = os.path.join(dirpath, filename)
                         
                         try:
                             stat = os.stat(file_path)
-                            # Unix 타임스탬프를 ISO 8601 형식으로 변환
                             mtime_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
                             results.append({
                                 'path': file_path,
@@ -174,8 +238,8 @@ class SearchEngine:
                                 'extension': os.path.splitext(filename)[1],
                                 'size': stat.st_size,
                                 'mtime': mtime_iso,
-                                'rank': 0,
-                                'preview': f'파일명 일치: {filename}'
+                                'rank': 1.0,  # 파일이 폴더보다 높은 우선순위
+                                'preview': f'파일명 {match_type}: {filename}'
                             })
                         except Exception:
                             pass

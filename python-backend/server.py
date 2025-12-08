@@ -57,6 +57,7 @@ except Exception:
 from database import DatabaseManager
 from indexer import FileIndexer
 from search import SearchEngine
+from summarizer import ContentSummarizer
 
 # 로그 디렉토리 생성
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
@@ -142,6 +143,10 @@ def initialize():
     # 검색 엔진 초기화
     search_engine = SearchEngine(db_manager)
     logger.info("검색 엔진 초기화 완료")
+    
+    # 요약 엔진 초기화
+    summarizer = ContentSummarizer()
+    logger.info("요약 엔진 초기화 완료")
     
     # 종료 시 정리 함수 등록
     atexit.register(cleanup)
@@ -470,10 +475,20 @@ def statistics():
     """통계 정보"""
     try:
         stats = search_engine.get_statistics()
+        if stats is None:
+            stats = {
+                'total_files': 0,
+                'total_size': 0,
+                'file_types': {}
+            }
         return jsonify(stats)
     except Exception as e:
         logger.error(f"통계 조회 오류: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'total_files': 0,
+            'total_size': 0,
+            'file_types': {}
+        }), 200  # 500 대신 200으로 반환하되 빈 통계
 
 
 @app.route('/api/database/clear', methods=['POST'])
@@ -635,6 +650,69 @@ def clear_exclusion_patterns():
         return jsonify({'error': str(e)}), 500
 
 
+# ============== 자동 인덱싱 ==============
+
+@app.route('/api/auto-indexing/start', methods=['POST'])
+def start_auto_indexing():
+    """
+    자동 인덱싱 시작
+    Body: {
+        "paths": ["C:\\Users\\..."],
+        "interval_minutes": 30  (선택, 기본: 30분)
+    }
+    """
+    try:
+        data = request.get_json()
+        paths = data.get('paths', [])
+        interval_minutes = data.get('interval_minutes', 30)
+        
+        if not paths:
+            return jsonify({'error': '인덱싱할 경로를 지정해주세요.'}), 400
+        
+        indexer.start_auto_indexing(paths, interval_minutes)
+        
+        return jsonify({
+            'status': 'started',
+            'message': f'자동 인덱싱 시작 (주기: {interval_minutes}분)',
+            'paths': paths
+        })
+    
+    except Exception as e:
+        logger.error(f"자동 인덱싱 시작 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/auto-indexing/stop', methods=['POST'])
+def stop_auto_indexing():
+    """자동 인덱싱 중지"""
+    try:
+        indexer.stop_auto_indexing()
+        
+        return jsonify({
+            'status': 'stopped',
+            'message': '자동 인덱싱이 중지되었습니다.'
+        })
+    
+    except Exception as e:
+        logger.error(f"자동 인덱싱 중지 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/auto-indexing/status', methods=['GET'])
+def get_auto_indexing_status():
+    """자동 인덱싱 상태 조회"""
+    try:
+        return jsonify({
+            'is_enabled': indexer.is_auto_indexing_enabled,
+            'interval_minutes': indexer.auto_indexing_interval / 60,
+            'paths': indexer.auto_indexing_paths
+        })
+    
+    except Exception as e:
+        logger.error(f"자동 인덱싱 상태 조회 오류: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/shutdown', methods=['POST'])
 def shutdown():
     """
@@ -667,6 +745,68 @@ def shutdown():
     except Exception as e:
         logger.error(f"서버 종료 오류: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# ============== 요약 API ==============
+
+@app.route('/api/summarize', methods=['POST'])
+def summarize_content():
+    """
+    파일 내용 요약 (TextRank)
+    
+    Request Body:
+        {
+            "file_path": "C:\\path\\to\\file.pdf",  # 파일 경로
+            "sentences_count": 5                     # 요약 문장 수 (옵션)
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "method": "TextRank",
+            "summary": "요약된 내용...",
+            "original_length": 5000,
+            "summary_length": 500,
+            "compression_ratio": "10.0%"
+        }
+    """
+    try:
+        data = request.json
+        
+        if not data or 'file_path' not in data:
+            return jsonify({'error': 'file_path가 필요합니다'}), 400
+        
+        file_path = data['file_path']
+        
+        # DB에서 인덱스된 내용 가져오기
+        file_detail = db_manager.get_indexed_file_detail(file_path)
+        
+        if not file_detail:
+            return jsonify({
+                'success': False,
+                'error': '파일이 인덱스되지 않았습니다'
+            }), 404
+        
+        text = file_detail.get('content', '')
+        
+        if not text:
+            return jsonify({
+                'success': False,
+                'error': '파일 내용이 비어있습니다'
+            }), 400
+        
+        # 요약 실행
+        sentences_count = data.get('sentences_count', 5)
+        result = summarizer.summarize(text, sentences_count=sentences_count)
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        logger.error(f"요약 API 오류: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 # ============== 메인 실행 ==============

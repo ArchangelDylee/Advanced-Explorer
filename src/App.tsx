@@ -103,6 +103,7 @@ interface DeleteDialogState {
 interface IndexLogEntry {
   time: string;
   path: string;
+  filename?: string;  // 파일명 (렌더링용)
   status: 'Indexed' | 'Skipped' | 'Error' | 'Success' | 'Skip' | 'Indexing' | 'Retry Success' | 'Info';
   size: string;
 }
@@ -316,9 +317,9 @@ export default function App() {
 
   // Tabs (Multi-instance)
   const [tabs, setTabs] = useLocalStorage<TabItem[]>('tabs', [{ 
-    id: 1, title: 'dylee', searchText: '', selectedFolder: 'dylee', currentPath: 'C:\\Users\\dylee', selectedFile: null, 
+    id: 1, title: '문서', searchText: '', selectedFolder: '문서', currentPath: `${userHome}\\Documents`, selectedFile: null, 
     files: [], sortConfig: { key: null, direction: 'asc' }, 
-    history: [{ name: 'dylee', path: 'C:\\Users\\dylee' }], historyIndex: 0 
+    history: [{ name: '문서', path: `${userHome}\\Documents` }], historyIndex: 0 
   }]);
   const [activeTabId, setActiveTabId] = useLocalStorage<number>('activeTabId', 1);
   const [nextTabId, setNextTabId] = useLocalStorage<number>('nextTabId', 2);
@@ -333,11 +334,19 @@ export default function App() {
   const [indexedDatabase, setIndexedDatabase] = useState<BackendAPI.IndexedFileInfo[]>([]);
   const [dbTotalCount, setDbTotalCount] = useState<number>(0);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [fileSummary, setFileSummary] = useState<string | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
   const [indexingStatus, setIndexingStatus] = useState<string>('대기 중...');
   const [indexingStats, setIndexingStats] = useState<BackendAPI.IndexingStats | null>(null);
+  
+  // AbortController for canceling previous requests
+  const statusAbortControllerRef = useRef<AbortController | null>(null);
+  const logsAbortControllerRef = useRef<AbortController | null>(null);
+  const statsAbortControllerRef = useRef<AbortController | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -499,7 +508,7 @@ export default function App() {
             childrenLoaded: true
           }]);
           
-          addSearchLog('드라이브 및 폴더 구조 로드 완료');
+          // 시스템 메시지는 로그에 표시하지 않음
         } catch (error) {
           console.error('Error initializing drives:', error);
         }
@@ -516,15 +525,17 @@ export default function App() {
     }
   }, []);
 
-  // Load image preview when file is selected
+  // Load file content when file is selected (image or document)
   useEffect(() => {
-    const loadImagePreview = async () => {
+    const loadFileContent = async () => {
       if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
         const ext = activeTab.selectedFile.type.toLowerCase();
         const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico'];
+        const documentExtensions = ['txt', 'pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'hwp'];
         
         if (imageExtensions.includes(ext)) {
           // 이미지 파일 - 미리보기 로드
+          setFileContent(null);
           if (typeof window !== 'undefined' && (window as any).electronAPI) {
             try {
               const electronAPI = (window as any).electronAPI;
@@ -540,15 +551,42 @@ export default function App() {
               setImagePreview(null);
             }
           }
+        } else if (documentExtensions.includes(ext)) {
+          // 문서 파일 - 인덱싱된 내용 조회
+          setImagePreview(null);
+          console.log('📄 문서 파일 선택:', activeTab.selectedFile.path);
+          
+          try {
+            const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+            console.log('📦 API 응답:', detail);
+            
+            if (detail && detail.content) {
+              setFileContent(detail.content);
+            } else {
+              setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+            }
+          } catch (error: any) {
+            console.error('파일 내용 조회 오류:', error);
+            const errorMsg = error?.message || String(error);
+            
+            if (errorMsg.includes('404')) {
+              setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+            } else {
+              setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
+            }
+          }
         } else {
           setImagePreview(null);
+          setFileContent(null);
         }
       } else {
         setImagePreview(null);
+        setFileContent(null);
+        setFileSummary(null); // 요약도 초기화
       }
     };
     
-    loadImagePreview();
+    loadFileContent();
   }, [activeTab.selectedFile]);
 
   // --- Helpers ---
@@ -586,6 +624,65 @@ export default function App() {
   // 유효한 파일/폴더 이름인지 확인 (특수 문자로 시작하는 것 제외)
   const isValidName = (name: string): boolean => {
     return /^[a-zA-Z0-9가-힣]/.test(name);
+  };
+
+  // 인덱싱 로그에서 파일 클릭 시 인덱스 내용 표시
+  const handleIndexLogClick = async (filePath: string) => {
+    console.log('🔍 인덱스 파일 클릭:', filePath);
+    addSearchLog(`🔍 인덱스 조회 요청: ${filePath.split('\\').pop()}`);
+    
+    try {
+      const detail = await BackendAPI.getIndexedFileDetail(filePath);
+      console.log('📦 API 응답:', detail);
+      
+      if (detail && detail.content) {
+        setFileContent(detail.content);
+        setFileSummary(null); // 요약 초기화
+        addSearchLog(`✅ 인덱스 조회 성공: ${filePath.split('\\').pop()} (${detail.content.length}자)`);
+      } else {
+        setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+        addSearchLog(`⚠️ 인덱스 조회 실패 (내용 없음): ${filePath.split('\\').pop()}`);
+      }
+    } catch (error: any) {
+      console.error('❌ 인덱스 조회 오류:', error);
+      const errorMsg = error?.message || String(error);
+      
+      if (errorMsg.includes('404')) {
+        setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+        addSearchLog(`❌ 404 오류: ${filePath.split('\\').pop()} (DB에 없음)`);
+      } else {
+        setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
+        addSearchLog(`❌ 인덱스 조회 오류: ${filePath.split('\\').pop()} - ${errorMsg}`);
+      }
+    }
+  };
+
+  // 파일 내용 요약
+  const handleSummarize = async () => {
+    if (!activeTab.selectedFile?.path) {
+      addSearchLog('⚠️ 파일을 선택해주세요');
+      return;
+    }
+
+    try {
+      setIsSummarizing(true);
+      addSearchLog(`🔄 요약 생성 중: ${activeTab.selectedFile.name}`);
+      
+      const result = await BackendAPI.summarizeFile(activeTab.selectedFile.path, 5);
+      
+      if (result.success && result.summary) {
+        setFileSummary(result.summary);
+        addSearchLog(`✓ 요약 완료: ${result.original_length}자 → ${result.summary_length}자 (${result.compression_ratio})`);
+      } else {
+        setFileSummary(null);
+        addSearchLog(`❌ 요약 실패: ${result.error || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('요약 오류:', error);
+      addSearchLog(`❌ 요약 오류: ${error}`);
+    } finally {
+      setIsSummarizing(false);
+    }
   };
 
   // --- Directory Content Generator (The "Fake" File System) ---
@@ -793,27 +890,90 @@ export default function App() {
       // 폴더 트리 동기화 (경로 펼치기 및 선택) - 비동기 처리
       await syncFolderTreeWithPath(folderPath);
 
-      // Don't log if it's just initialization
-      if (folderName !== activeTab.selectedFolder) {
-        addSearchLog(isHistoryNav ? `탐색(히스토리): ${folderName}` : `디렉토리 이동: ${folderPath}`);
-      }
+      // 폴더 이동 로그는 표시하지 않음 (너무 자주 발생)
     } catch (error) {
       console.error('Navigation error:', error);
-      addSearchLog(`탐색 오류: ${folderPath}`);
+      addSearchLog(`❌ 탐색 오류: ${folderPath}`);
     }
   };
 
-  const handleBack = () => {
+  const handleBack = async () => {
     if (activeTab.historyIndex > 0) {
-      const prev = activeTab.history[activeTab.historyIndex - 1];
-      navigate(prev.name, prev.path, true);
+      const newIndex = activeTab.historyIndex - 1;
+      const prev = activeTab.history[newIndex];
+      
+      try {
+        let rawContent = await generateDirectoryContent(prev.name, prev.path);
+        
+        // Filter invalid names
+        const isValidName = (name: string) => /^[a-zA-Z0-9가-힣]/.test(name);
+        rawContent = rawContent.filter(item => isValidName(item.name));
+        
+        // Sort: Folders first, then files
+        rawContent.sort((a, b) => {
+          if (a.type === 'folder' && b.type !== 'folder') return -1;
+          if (a.type !== 'folder' && b.type === 'folder') return 1;
+          return a.name.localeCompare(b.name);
+        });
+        
+        updateActiveTab({ 
+          selectedFolder: prev.name, 
+          currentPath: prev.path,
+          title: prev.name,
+          files: rawContent,
+          selectedFile: null,
+          searchText: '',
+          historyIndex: newIndex
+        });
+        
+        // 폴더 트리 동기화
+        await syncFolderTreeWithPath(prev.path);
+        
+        // 히스토리 이동 로그는 표시하지 않음
+      } catch (error) {
+        console.error('Back navigation error:', error);
+        addSearchLog(`❌ 뒤로 이동 오류: ${prev.path}`);
+      }
     }
   };
 
-  const handleForward = () => {
+  const handleForward = async () => {
     if (activeTab.historyIndex < activeTab.history.length - 1) {
-      const next = activeTab.history[activeTab.historyIndex + 1];
-      navigate(next.name, next.path, true);
+      const newIndex = activeTab.historyIndex + 1;
+      const next = activeTab.history[newIndex];
+      
+      try {
+        let rawContent = await generateDirectoryContent(next.name, next.path);
+        
+        // Filter invalid names
+        const isValidName = (name: string) => /^[a-zA-Z0-9가-힣]/.test(name);
+        rawContent = rawContent.filter(item => isValidName(item.name));
+        
+        // Sort: Folders first, then files
+        rawContent.sort((a, b) => {
+          if (a.type === 'folder' && b.type !== 'folder') return -1;
+          if (a.type !== 'folder' && b.type === 'folder') return 1;
+          return a.name.localeCompare(b.name);
+        });
+        
+        updateActiveTab({ 
+          selectedFolder: next.name, 
+          currentPath: next.path,
+          title: next.name,
+          files: rawContent,
+          selectedFile: null,
+          searchText: '',
+          historyIndex: newIndex
+        });
+        
+        // 폴더 트리 동기화
+        await syncFolderTreeWithPath(next.path);
+        
+        // 히스토리 이동 로그는 표시하지 않음
+      } catch (error) {
+        console.error('Forward navigation error:', error);
+        addSearchLog(`❌ 앞으로 이동 오류: ${next.path}`);
+      }
     }
   };
 
@@ -878,35 +1038,65 @@ export default function App() {
         setIndexingStatus('인덱싱 진행 중...');
         addIndexingMessage('인덱싱이 시작되었습니다');
         
-        // 주기적으로 상태 및 로그 확인
+        // 주기적으로 상태 및 로그 확인 (Throttling + AbortController)
         const statusInterval = setInterval(async () => {
           try {
+            // 1. 상태 조회 (이전 요청 취소)
+            if (statusAbortControllerRef.current) {
+              statusAbortControllerRef.current.abort();
+            }
+            statusAbortControllerRef.current = new AbortController();
+            
             const status = await BackendAPI.getIndexingStatus();
             setIndexingStats(status.stats);
             
-            // DB 총 개수 업데이트
+            // 2. DB 통계 업데이트 (이전 요청 취소)
             try {
+              if (statsAbortControllerRef.current) {
+                statsAbortControllerRef.current.abort();
+              }
+              statsAbortControllerRef.current = new AbortController();
+              
               const stats = await BackendAPI.getStatistics();
               setDbTotalCount(stats.total_indexed_files);
             } catch (error) {
-              console.error('통계 조회 오류:', error);
+              if (error.name !== 'AbortError') {
+                console.error('통계 조회 오류:', error);
+              }
             }
             
-            // 로그 가져오기
-            const logsResponse = await BackendAPI.getIndexingLogs(100);
-            if (logsResponse.logs && logsResponse.logs.length > 0) {
-              const mappedLogs = logsResponse.logs.map(log => ({
-                time: log.time,
-                path: log.filename,
-                status: log.status,
-                size: log.detail
-              }));
-              setIndexingLog(mappedLogs);
+            // 3. 로그 가져오기 (이전 요청 취소)
+            try {
+              if (logsAbortControllerRef.current) {
+                logsAbortControllerRef.current.abort();
+              }
+              logsAbortControllerRef.current = new AbortController();
+              
+              const logsResponse = await BackendAPI.getIndexingLogs(100);
+              if (logsResponse.logs && logsResponse.logs.length > 0) {
+                const mappedLogs = logsResponse.logs.map(log => ({
+                  time: log.time,
+                  path: log.path || log.filename,  // 전체 경로 사용
+                  filename: log.filename,           // 파일명도 저장
+                  status: log.status,
+                  size: log.detail
+                }));
+                setIndexingLog(mappedLogs);
+              }
+            } catch (error) {
+              if (error.name !== 'AbortError') {
+                console.error('로그 조회 오류:', error);
+              }
             }
             
             if (!status.is_running) {
               clearInterval(statusInterval);
               setIsIndexing(false);
+              
+              // AbortController 정리
+              statusAbortControllerRef.current = null;
+              logsAbortControllerRef.current = null;
+              statsAbortControllerRef.current = null;
               
               // 재시도 워커 상태 표시
               if (status.retry_worker?.is_running && status.retry_worker.pending_files > 0) {
@@ -921,9 +1111,11 @@ export default function App() {
               setIndexingStatus(`인덱싱 중... (${status.stats.indexed_files}/${status.stats.total_files})`);
             }
           } catch (error) {
-            console.error('인덱싱 상태 확인 오류:', error);
+            if (error.name !== 'AbortError') {
+              console.error('인덱싱 상태 확인 오류:', error);
+            }
           }
-        }, 1000); // 1초마다 상태 확인
+        }, 1000); // 1초마다 상태 확인 (Throttling)
         
       } else {
         throw new Error(response.message || '색인 시작 실패');
@@ -943,14 +1135,37 @@ export default function App() {
       
       await BackendAPI.stopIndexing();
       
-      setIsIndexing(false);
-      setIsIndexStopping(false);
-      setIndexingStatus('중지됨');
-      addIndexingMessage('인덱싱이 중지되었습니다');
+      // 백엔드 마무리 작업이 완료될 때까지 대기 (상태 폴링)
+      addIndexingMessage('마무리 중...');
       
-      setTimeout(() => {
-        setIndexingStatus('대기 중...');
-      }, 2000);
+      const checkStopComplete = async () => {
+        try {
+          const status = await BackendAPI.getIndexingStatus();
+          if (!status.is_running) {
+            // 마무리 완료
+            setIsIndexing(false);
+            setIsIndexStopping(false);
+            setIndexingStatus('중지됨');
+            addIndexingMessage('✓ 인덱싱이 중지되었습니다');
+            
+            setTimeout(() => {
+              setIndexingStatus('대기 중...');
+            }, 2000);
+          } else {
+            // 아직 마무리 중 - 1초 후 재시도
+            setTimeout(checkStopComplete, 1000);
+          }
+        } catch (error) {
+          console.error('상태 확인 오류:', error);
+          setIsIndexing(false);
+          setIsIndexStopping(false);
+          setIndexingStatus('중지됨 (오류)');
+        }
+      };
+      
+      // 폴링 시작
+      setTimeout(checkStopComplete, 500);
+      
     } catch (error) {
       console.error('인덱싱 중지 오류:', error);
       addIndexingMessage(`인덱싱 중지 오류: ${error}`);
@@ -1080,10 +1295,33 @@ export default function App() {
     
     setIsSearching(true);
     
-    // 검색 시작 로그
+    // 검색 타입 감지
+    const isExactMatch = searchTerm.startsWith('"') && searchTerm.endsWith('"');
+    const searchTerms = searchTerm.split(' ').filter(t => t.trim());
+    const isMultiWord = !isExactMatch && searchTerms.length > 1;
+    
+    let searchType = '';
+    if (isExactMatch) {
+      searchType = '정확한 문장 일치';
+    } else if (isMultiWord) {
+      searchType = `복합 검색 (${searchTerms.length}개 단어 모두 포함)`;
+    } else {
+      searchType = '단일 단어 포함';
+    }
+    
+    // 로딩 시작 로그
     addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    addSearchLog(`⏳ 검색 준비 중...`);
+    addSearchLog(`   검색어: "${searchTerm}"`);
+    addSearchLog(`   검색 타입: ${searchType}`);
+    
+    // 0.5초 지연 (로딩 효과)
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // 검색 시작 로그
     addSearchLog(`🔍 검색 시작: "${searchTerm}"`);
     addSearchLog(`검색 범위: ${activeTab.currentPath}`);
+    addSearchLog(`대상: 인덱스 DB (최우선) + 윈도우 파일시스템`);
     addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     
     // 검색 히스토리 저장
@@ -1275,6 +1513,24 @@ export default function App() {
         ::-webkit-scrollbar-thumb:hover { background: ${COLORS.scrollbarThumbHover}; }
       `}</style>
 
+      {/* --- Indexing Stopping Dialog --- */}
+      {isIndexStopping && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-[350px] bg-[#202020] border border-[#444] rounded-lg shadow-2xl p-6 transform scale-100">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full bg-blue-500/10 flex items-center justify-center mb-4">
+                <div className="animate-spin">
+                  <Activity className="text-blue-500" size={32} />
+                </div>
+              </div>
+              <h3 className="text-base font-bold text-white mb-2">마무리 중입니다</h3>
+              <p className="text-sm text-gray-400">잠시만 기다려 주세요...</p>
+              <p className="text-xs text-gray-500 mt-2">현재 처리 중인 파일을 완료하고 있습니다</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* --- Delete Dialog --- */}
       {deleteDialog.isOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
@@ -1300,7 +1556,11 @@ export default function App() {
       {contextMenu.visible && contextMenu.target && (
         <div className="fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
           <div className="px-3 py-2 text-xs text-gray-500 border-b border-[#444] mb-1 truncate max-w-[250px]">{contextMenu.target.path}</div>
-          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.path); addSearchLog('경로 복사됨'); }}>
+          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { 
+            const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
+            navigator.clipboard.writeText(dirPath); 
+            addSearchLog(`경로 복사됨: ${dirPath}`); 
+          }}>
             <Copy size={14} className="text-gray-400 group-hover:text-white" /> 경로 복사
           </button>
           <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.name); addSearchLog('이름 복사됨'); }}>
@@ -1318,7 +1578,7 @@ export default function App() {
             <div onClick={(e) => { e.stopPropagation(); if(tabs.length > 1) { const remain = tabs.filter(t=>t.id!==tab.id); setTabs(remain); if(tab.id===activeTabId) setActiveTabId(remain[remain.length-1].id); }}} className="p-0.5 rounded hover:bg-[#333] hover:text-red-400 opacity-0 group-hover:opacity-100 active:scale-90 transition-transform duration-100"><X size={12} /></div>
           </div>
         ))}
-        <button onClick={() => { const id = nextTabId; setTabs([...tabs, { id, title: '내 PC', searchText: '', selectedFolder: '내 PC', currentPath: 'My Computer', selectedFile: null, files: [], sortConfig: {key:null, direction:'asc'}, history: [{name:'내 PC', path:'My Computer'}], historyIndex: 0 }]); setNextTabId(id+1); setActiveTabId(id); }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
+        <button onClick={() => { const id = nextTabId; setTabs([...tabs, { id, title: '문서', searchText: '', selectedFolder: '문서', currentPath: `${userHome}\\Documents`, selectedFile: null, files: [], sortConfig: {key:null, direction:'asc'}, history: [{name:'문서', path: `${userHome}\\Documents`}], historyIndex: 0 }]); setNextTabId(id+1); setActiveTabId(id); }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
         <div className="flex-1 h-full" style={{ WebkitAppRegion: 'drag' } as any}></div>
       </div>
 
@@ -1614,16 +1874,78 @@ export default function App() {
                           />
                         </div>
                       </div>
+                    ) : fileContent ? (
+                      <div className="h-full flex flex-col gap-2 p-3 bg-[#151515] border border-[#333] rounded">
+                        <div className="text-sm text-gray-400 border-b border-[#333] pb-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="font-bold">{activeTab.selectedFile.name}</div>
+                              <div className="text-xs mt-1">
+                                크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
+                              </div>
+                              <div className="text-xs mt-1 text-green-400">
+                                ✓ 인덱싱된 내용
+                              </div>
+                            </div>
+                            <button
+                              onClick={handleSummarize}
+                              disabled={isSummarizing}
+                              className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                                isSummarizing 
+                                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                                  : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                              }`}
+                            >
+                              {isSummarizing ? (
+                                <>
+                                  <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                                  요약 중...
+                                </>
+                              ) : (
+                                <>
+                                  <FileText size={12} />
+                                  요약 생성
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {/* 요약 결과 표시 */}
+                        {fileSummary && (
+                          <div className="bg-[#1a3a1a] border border-green-800 rounded p-3 mb-2">
+                            <div className="flex items-center gap-2 mb-2 text-green-400 text-xs font-bold">
+                              <FileText size={12} />
+                              <span>📝 AI 요약 (TextRank)</span>
+                            </div>
+                            <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed">
+                              {fileSummary}
+                            </pre>
+                          </div>
+                        )}
+                        
+                        {/* 전체 내용 */}
+                        <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded p-3">
+                          <div className="text-[10px] text-gray-500 mb-2">전체 내용:</div>
+                          <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
+                            {fileContent}
+                          </pre>
+                        </div>
+                      </div>
                     ) : (
-                      <div className="p-3 bg-[#151515] border border-[#333] rounded h-full">
+                      <div className="p-3 bg-[#151515] border border-[#333] rounded h-full flex flex-col items-center justify-center">
+                        <AlertTriangle className="text-yellow-500 mb-3" size={48} />
                         <div className="text-sm text-gray-400 mb-2">
-                          <div className="font-bold">{activeTab.selectedFile.name}</div>
-                          <div className="text-xs mt-1">
+                          <div className="font-bold text-center">{activeTab.selectedFile.name}</div>
+                          <div className="text-xs mt-1 text-center">
                             크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
                           </div>
                         </div>
-                        <div className="text-gray-500 text-xs mt-4">
-                          문서파일은 인덱싱 완료된 내역만 보이며, 이미지 파일은 인덱싱과 무관하게 미리보기가 가능합니다.
+                        <div className="text-yellow-400 text-sm font-semibold mt-4 text-center">
+                          ⚠️ 인덱싱 미완료 상태로 내역을 보여줄 수 없습니다
+                        </div>
+                        <div className="text-gray-500 text-xs mt-2 text-center">
+                          인덱싱이 완료되면 내용을 확인할 수 있습니다.
                         </div>
                       </div>
                     )}
@@ -1687,9 +2009,19 @@ export default function App() {
                   // DB 저장 완료 여부 확인
                   const isDBSaved = log.size?.includes('✓ DB 저장 완료');
                   const isDBPending = log.size?.includes('⊗ DB 저장 대기');
+                  // path가 있고 전체 경로인 경우만 클릭 가능 (특수 문자로 시작하지 않음)
+                  const isClickable = isDBSaved && log.path && log.path.includes('\\') && !log.path.startsWith('📋') && !log.path.startsWith('⏸️') && !log.path.startsWith('▶️');
+                  
+                  // UI에는 파일명만 표시
+                  const displayName = log.filename || log.path.split('\\').pop() || log.path;
                   
                   return (
-                    <div key={i} className="flex items-center gap-2 pb-1 border-b border-[#333] hover:bg-[#2a2a2a]">
+                    <div 
+                      key={i} 
+                      className={`flex items-center gap-2 pb-1 border-b border-[#333] hover:bg-[#2a2a2a] ${isClickable ? 'cursor-pointer' : ''}`}
+                      onClick={() => isClickable && handleIndexLogClick(log.path)}
+                      title={isClickable ? `클릭하여 인덱스 내용 보기\n${log.path}` : log.path}
+                    >
                       <span className="text-gray-500 shrink-0 text-[10px]">[{log.time}]</span>
                       <span className={`shrink-0 font-bold text-[10px] min-w-[80px] ${
                         log.status === 'Error' ? 'text-red-400' : 
@@ -1707,7 +2039,9 @@ export default function App() {
                          log.status === 'Indexing' ? '⟳ 처리중' : 
                          log.status}
                       </span>
-                      <span className="flex-1 truncate text-white text-[10px]" title={log.path}>{log.path}</span>
+                      <span className={`flex-1 truncate text-white text-[10px] ${isClickable ? 'underline decoration-dotted' : ''}`} title={log.path}>
+                        {displayName}
+                      </span>
                       {log.size && (
                         <span className="shrink-0 text-gray-400 text-[9px]">
                           {log.size}

@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, powerMonitor, globalShortcut } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const processControl = require('./processControl.cjs');
 
 // UTF-8 인코딩 환경 변수 설정 (한글 처리)
 if (process.platform === 'win32') {
@@ -52,6 +53,15 @@ try {
 
 let mainWindow;
 let pythonProcess = null;
+let pythonPid = null;
+
+// 사용자 활동 모니터링 (Python Suspend/Resume용)
+let userActivityMonitor = {
+  lastActivityTime: Date.now(),
+  isPythonSuspended: false,
+  checkInterval: null,
+  idleThreshold: 500 // 0.5초
+};
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -79,8 +89,8 @@ function createWindow() {
   // 개발 모드면 Vite 서버 주소로, 프로덕션이면 빌드된 파일로
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
-    // 개발자 도구 자동 열기
-    mainWindow.webContents.openDevTools();
+    // 개발자 도구 자동 열기 (필요시 주석 해제)
+    // mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
@@ -168,15 +178,94 @@ function startPythonBackend() {
     pythonProcess.on('close', (code) => {
       console.log(`Python 백엔드 종료 (코드: ${code})`);
       pythonProcess = null;
+      pythonPid = null;
     });
     
-    console.log('✓ Python 백엔드 시작 완료');
+    // Python PID 저장 (Suspend/Resume용)
+    pythonPid = pythonProcess.pid;
+    console.log(`✓ Python 백엔드 시작 완료 (PID: ${pythonPid})`);
     console.log('========================================');
+    
+    // Python Suspend/Resume 모니터링 시작
+    startPythonActivityMonitor();
+    
     return pythonProcess;
   } catch (error) {
     console.error('❌ Python 백엔드 시작 오류:', error);
     return null;
   }
+}
+
+// Python Suspend/Resume을 위한 사용자 활동 모니터링
+function startPythonActivityMonitor() {
+  if (!pythonPid) {
+    console.warn('⚠ Python PID가 없어 활동 모니터링을 시작할 수 없습니다');
+    return;
+  }
+  
+  console.log('========================================');
+  console.log('🎮 Python Suspend/Resume 모니터링 시작');
+  console.log(`  - Python PID: ${pythonPid}`);
+  console.log(`  - 유휴 임계값: ${userActivityMonitor.idleThreshold}ms (0.5초)`);
+  console.log('========================================');
+  
+  // 전역 키보드/마우스 이벤트 모니터링 (간접적 방법)
+  // Electron은 전역 이벤트를 직접 감지할 수 없으므로 
+  // 앱 내부 이벤트로 대리 감지
+  if (mainWindow) {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      onUserActivity();
+    });
+  }
+  
+  // 주기적으로 유휴 상태 체크 (50ms마다)
+  userActivityMonitor.checkInterval = setInterval(() => {
+    checkPythonSuspendResume();
+  }, 50); // 매우 빠른 응답
+  
+  console.log('✓ Python 활동 모니터링 시작 완료');
+}
+
+function onUserActivity() {
+  userActivityMonitor.lastActivityTime = Date.now();
+  
+  // Python이 실행 중이면 즉시 Suspend
+  if (pythonPid && !userActivityMonitor.isPythonSuspended) {
+    console.log('⏸️ 사용자 활동 감지 - Python Suspend');
+    if (processControl.suspendProcess(pythonPid)) {
+      userActivityMonitor.isPythonSuspended = true;
+    }
+  }
+}
+
+function checkPythonSuspendResume() {
+  if (!pythonPid) return;
+  
+  const idleTime = Date.now() - userActivityMonitor.lastActivityTime;
+  
+  // 0.5초 이상 유휴 상태이고 Python이 Suspend 상태라면 Resume
+  if (idleTime >= userActivityMonitor.idleThreshold && userActivityMonitor.isPythonSuspended) {
+    console.log('▶️ 유휴 상태 감지 (0.5초) - Python Resume');
+    if (processControl.resumeProcess(pythonPid)) {
+      userActivityMonitor.isPythonSuspended = false;
+    }
+  }
+}
+
+function stopPythonActivityMonitor() {
+  if (userActivityMonitor.checkInterval) {
+    clearInterval(userActivityMonitor.checkInterval);
+    userActivityMonitor.checkInterval = null;
+  }
+  
+  // Python이 Suspend 상태라면 Resume
+  if (pythonPid && userActivityMonitor.isPythonSuspended) {
+    console.log('🔄 모니터링 중지 - Python Resume');
+    processControl.resumeProcess(pythonPid);
+    userActivityMonitor.isPythonSuspended = false;
+  }
+  
+  console.log('✓ Python 활동 모니터링 중지 완료');
 }
 
 // 인덱싱 상태 저장 변수
@@ -385,6 +474,9 @@ app.on('before-quit', async (event) => {
   if (isQuitting) {
     return; // 이미 종료 진행 중
   }
+  
+  // Python 활동 모니터링 중지
+  stopPythonActivityMonitor();
   
   if (pythonProcess) {
     // 앱 종료를 일시 중단하고 백엔드를 안전하게 종료

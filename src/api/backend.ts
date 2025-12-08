@@ -447,3 +447,36 @@ export async function clearExclusionPatterns(): Promise<any> {
   }
 }
 
+// ============== 요약 API ==============
+
+export interface SummaryResult {
+  success: boolean;
+  method?: string;
+  summary?: string;
+  original_length?: number;
+  summary_length?: number;
+  compression_ratio?: string;
+  sentences_count?: number;
+  language?: string;
+  error?: string;
+}
+
+export async function summarizeFile(filePath: string, sentencesCount: number = 5): Promise<SummaryResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/summarize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        file_path: filePath,
+        sentences_count: sentencesCount
+      })
+    });
+    return await response.json();
+  } catch (error) {
+    console.error('파일 요약 오류:', error);
+    throw error;
+  }
+}
+
