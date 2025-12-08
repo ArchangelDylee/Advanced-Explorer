@@ -1,9 +1,45 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const fs = require('fs');
 
 // 개발 모드 감지
 const isDev = !app.isPackaged;
+
+// 설정 파일 로드
+let config = null;
+try {
+  const configPath = path.join(__dirname, '../config.json');
+  const configData = fs.readFileSync(configPath, 'utf8');
+  config = JSON.parse(configData);
+  console.log('✓ 설정 파일 로드 완료:', configPath);
+  console.log('  - Python 가상환경:', config.python.pythonExecutable);
+  console.log('  - 가상환경 필수:', config.python.requireVenv);
+  console.log('  - 백엔드 자동 시작:', config.backend.autoStart);
+} catch (error) {
+  console.error('⚠ 설정 파일 로드 실패, 기본값 사용:', error.message);
+  config = {
+    python: {
+      venvPath: 'python-backend/venv',
+      pythonExecutable: 'python-backend/venv/Scripts/python.exe',
+      backendPath: 'python-backend',
+      serverScript: 'server.py',
+      requireVenv: true,
+      autoInstallDependencies: true
+    },
+    backend: {
+      host: '127.0.0.1',
+      port: 5000,
+      autoStart: true
+    },
+    indexing: {
+      enableActivityMonitor: true,
+      idleThreshold: 3.0,
+      maxFileSize: 104857600,
+      parseTimeout: 60
+    }
+  };
+}
 
 let mainWindow;
 let pythonProcess = null;
@@ -46,30 +82,64 @@ function createWindow() {
   });
 }
 
-// Python 백엔드 시작
+// Python 백엔드 시작 (설정 파일 기반)
 function startPythonBackend() {
   try {
-    const pythonBackendPath = path.join(__dirname, '../python-backend');
-    const pythonExe = path.join(pythonBackendPath, 'venv/Scripts/python.exe');
-    const serverScript = path.join(pythonBackendPath, 'server.py');
+    console.log('========================================');
+    console.log('Python 백엔드 시작 (가상환경 사용)');
+    console.log('========================================');
     
-    // Python이 설치되어 있는지 확인
-    const fs = require('fs');
+    const pythonBackendPath = path.join(__dirname, '..', config.python.backendPath);
+    const pythonExe = path.join(__dirname, '..', config.python.pythonExecutable);
+    const serverScript = path.join(pythonBackendPath, config.python.serverScript);
+    
+    console.log('  - 백엔드 경로:', pythonBackendPath);
+    console.log('  - Python 실행 파일:', pythonExe);
+    console.log('  - 서버 스크립트:', serverScript);
+    
+    // 가상환경 Python 확인
+    if (!fs.existsSync(pythonExe)) {
+      if (config.python.requireVenv) {
+        console.error('❌ 가상환경 Python이 없습니다:', pythonExe);
+        console.error('❌ 가상환경이 필수입니다. python-backend/venv를 설정하세요.');
+        return null;
+      } else {
+        console.warn('⚠ 가상환경 Python이 없습니다. 시스템 Python을 사용합니다.');
+      }
+    } else {
+      console.log('✓ 가상환경 Python 확인됨');
+    }
+    
+    // 서버 스크립트 확인
     if (!fs.existsSync(serverScript)) {
-      console.warn('Python 백엔드가 설치되지 않았습니다. 검색 기능이 제한됩니다.');
+      console.error('❌ Python 백엔드 스크립트가 없습니다:', serverScript);
       return null;
+    }
+    console.log('✓ 서버 스크립트 확인됨');
+    
+    // Python 실행 파일 결정
+    const pythonCmd = fs.existsSync(pythonExe) ? pythonExe : 'python';
+    
+    if (pythonCmd === 'python') {
+      console.warn('⚠ 시스템 Python을 사용합니다 (가상환경 아님)');
+    } else {
+      console.log('✓ 가상환경 Python 사용:', pythonCmd);
     }
     
     // Python 프로세스 시작 (UTF-8 인코딩 강제)
-    const pythonCmd = fs.existsSync(pythonExe) ? pythonExe : 'python';
     pythonProcess = spawn(pythonCmd, [serverScript], {
       cwd: pythonBackendPath,
       env: {
         ...process.env,
-        PYTHONIOENCODING: 'utf-8',  // Python 입출력 UTF-8 강제
-        PYTHONUTF8: '1',  // Python 3.7+ UTF-8 모드 활성화
-        LANG: 'ko_KR.UTF-8',  // 로케일 설정
-        LC_ALL: 'ko_KR.UTF-8'  // 전체 로케일 설정
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+        LANG: 'ko_KR.UTF-8',
+        LC_ALL: 'ko_KR.UTF-8',
+        // 설정 값 환경 변수로 전달
+        ENABLE_ACTIVITY_MONITOR: config.indexing.enableActivityMonitor.toString(),
+        IDLE_THRESHOLD: config.indexing.idleThreshold.toString(),
+        MAX_FILE_SIZE: config.indexing.maxFileSize.toString(),
+        PARSE_TIMEOUT: config.indexing.parseTimeout.toString()
       }
     });
     
@@ -86,19 +156,27 @@ function startPythonBackend() {
       pythonProcess = null;
     });
     
-    console.log('Python 백엔드 시작됨');
+    console.log('✓ Python 백엔드 시작 완료');
+    console.log('========================================');
     return pythonProcess;
   } catch (error) {
-    console.error('Python 백엔드 시작 오류:', error);
+    console.error('❌ Python 백엔드 시작 오류:', error);
     return null;
   }
 }
 
 // 앱이 준비되면 윈도우 생성
 app.whenReady().then(() => {
-  // 개발 모드에서는 외부에서 Python을 실행하므로 자동 시작 비활성화
-  if (!isDev) {
-    startPythonBackend();
+  // 설정에 따라 Python 백엔드 자동 시작
+  if (config.backend.autoStart) {
+    // 개발 모드에서는 외부에서 Python을 실행하므로 자동 시작 비활성화
+    if (!isDev) {
+      startPythonBackend();
+    } else {
+      console.log('⚠ 개발 모드: Python 백엔드 자동 시작 건너뜀 (수동 실행 필요)');
+    }
+  } else {
+    console.log('⚠ 설정에서 백엔드 자동 시작이 비활성화됨');
   }
   
   createWindow();

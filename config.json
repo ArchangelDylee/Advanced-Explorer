@@ -1,0 +1,22 @@
+{
+  "python": {
+    "venvPath": "python-backend/venv",
+    "pythonExecutable": "python-backend/venv/Scripts/python.exe",
+    "backendPath": "python-backend",
+    "serverScript": "server.py",
+    "requireVenv": true,
+    "autoInstallDependencies": true
+  },
+  "backend": {
+    "host": "127.0.0.1",
+    "port": 5000,
+    "autoStart": true
+  },
+  "indexing": {
+    "enableActivityMonitor": true,
+    "idleThreshold": 3.0,
+    "maxFileSize": 104857600,
+    "parseTimeout": 60
+  }
+}
+

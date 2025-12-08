@@ -9,6 +9,7 @@ import logging
 from database import DatabaseManager
 import sys
 import io
+from datetime import datetime
 
 # ========================================
 # UTF-8 전역 설정 (최우선 실행)
@@ -164,13 +165,15 @@ class SearchEngine:
                         
                         try:
                             stat = os.stat(file_path)
+                            # Unix 타임스탬프를 ISO 8601 형식으로 변환
+                            mtime_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
                             results.append({
                                 'path': file_path,
                                 'name': filename,
                                 'directory': dirpath,
                                 'extension': os.path.splitext(filename)[1],
                                 'size': stat.st_size,
-                                'mtime': str(stat.st_mtime),
+                                'mtime': mtime_iso,
                                 'rank': 0,
                                 'preview': f'파일명 일치: {filename}'
                             })
@@ -289,13 +292,22 @@ class SearchEngine:
                 return None
             
             # 기본 정보
+            # mtime을 ISO 8601 형식으로 변환
+            mtime_raw = result.get('mtime', '')
+            mtime_iso = ''
+            if mtime_raw:
+                try:
+                    mtime_iso = datetime.fromtimestamp(float(mtime_raw)).isoformat()
+                except (ValueError, TypeError):
+                    mtime_iso = ''
+            
             formatted = {
                 'path': path,
                 'name': os.path.basename(path),
                 'directory': os.path.dirname(path),
                 'extension': os.path.splitext(path)[1],
                 'size': os.path.getsize(path),
-                'mtime': result.get('mtime', ''),
+                'mtime': mtime_iso,
                 'rank': result.get('rank', 0)
             }
             

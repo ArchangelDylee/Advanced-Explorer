@@ -22,3 +22,6 @@ requests==2.31.0         # Flask API 통신
 # 유틸리티
 Werkzeug==3.0.1
 
+# 사용자 입력 감지 (키보드/마우스)
+pynput==1.7.6
+

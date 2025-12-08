@@ -626,7 +626,15 @@ export default function App() {
           validFiles.map(async (file: any) => {
             const stats = await electronAPI.getFileStats(file.path);
             const fileSize = stats && !stats.isDirectory ? formatFileSize(stats.size) : '';
-            const modifiedDate = stats ? new Date(stats.modified).toLocaleDateString() : '';
+            const modifiedDate = stats ? new Date(stats.modified).toLocaleString('ko-KR', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false
+            }) : '';
             
             return {
               name: file.name,
@@ -957,7 +965,21 @@ export default function App() {
     let i = 2;
     while (activeTab.files.some(f => f.name === name)) name = `${base} (${i++})`;
     
-    const newFolder: FileItem = { name, size: '', date: new Date().toLocaleDateString(), type: 'folder', path: `${activeTab.currentPath}\\${name}` };
+    const newFolder: FileItem = { 
+      name, 
+      size: '', 
+      date: new Date().toLocaleString('ko-KR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }), 
+      type: 'folder', 
+      path: `${activeTab.currentPath}\\${name}` 
+    };
     const newFiles = [newFolder, ...activeTab.files].sort((a, b) => (a.type === 'folder' && b.type !== 'folder' ? -1 : 1));
     updateActiveTab({ files: newFiles });
     addSearchLog(`새 폴더 생성: ${name}`);
@@ -984,7 +1006,19 @@ export default function App() {
         name = `${clipboard.name} - 복사본 (${i++})`;
       }
     }
-    const newFile = { ...clipboard, name, date: new Date().toLocaleDateString() };
+    const newFile = { 
+      ...clipboard, 
+      name, 
+      date: new Date().toLocaleString('ko-KR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }) 
+    };
     const newFiles = [newFile, ...activeTab.files].sort((a, b) => (a.type === 'folder' && b.type !== 'folder' ? -1 : 1));
     updateActiveTab({ files: newFiles });
     addSearchLog(`붙여넣기: ${name}`);
@@ -1105,7 +1139,15 @@ export default function App() {
         const fileItems: FileItem[] = results.map(result => ({
           name: result.name,
           size: result.size ? `${(result.size / 1024).toFixed(1)} KB` : '-',
-          date: result.mtime ? new Date(result.mtime).toLocaleDateString() : '-',
+          date: result.mtime ? new Date(result.mtime).toLocaleString('ko-KR', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+          }) : '-',
           type: result.extension || 'file',
           path: result.path
         }));
@@ -1581,7 +1623,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="text-gray-500 text-xs mt-4">
-                          파일 내용 미리보기는 이미지 파일만 지원됩니다.
+                          문서파일은 인덱싱 완료된 내역만 보이며, 이미지 파일은 인덱싱과 무관하게 미리보기가 가능합니다.
                         </div>
                       </div>
                     )}

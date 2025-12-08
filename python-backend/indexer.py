@@ -20,6 +20,14 @@ import unicodedata
 # 텍스트 추출 라이브러리
 import chardet  # 인코딩 자동 감지
 
+# 사용자 입력 감지 (키보드/마우스)
+try:
+    from pynput import mouse, keyboard
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+    logging.warning("pynput not installed. User activity monitoring disabled.")
+
 # 문서 파일 파싱
 try:
     import docx  # python-docx
@@ -163,6 +171,120 @@ def with_timeout(seconds):
     return decorator
 
 
+class UserActivityMonitor:
+    """
+    사용자 활동 모니터 (키보드/마우스)
+    
+    Windows 전체 시스템에서 키보드 입력 및 마우스 움직임을 감지하고,
+    활동이 감지되면 인덱싱을 일시정지합니다.
+    """
+    
+    def __init__(self, idle_threshold: float = 3.0):
+        """
+        Args:
+            idle_threshold: 사용자 활동이 없는 시간 (초) - 이 시간이 지나면 인덱싱 재개
+        """
+        self.idle_threshold = idle_threshold
+        self.last_activity_time = time.time()
+        self.is_monitoring = False
+        self.keyboard_listener = None
+        self.mouse_listener = None
+        self._lock = threading.Lock()
+        
+    def start(self):
+        """모니터링 시작"""
+        if not PYNPUT_AVAILABLE:
+            logger.warning("pynput이 설치되지 않아 사용자 활동 모니터링을 사용할 수 없습니다.")
+            return False
+        
+        if self.is_monitoring:
+            return True
+        
+        try:
+            # 키보드 리스너
+            self.keyboard_listener = keyboard.Listener(
+                on_press=self._on_activity,
+                on_release=self._on_activity
+            )
+            
+            # 마우스 리스너
+            self.mouse_listener = mouse.Listener(
+                on_move=self._on_activity,
+                on_click=self._on_activity,
+                on_scroll=self._on_activity
+            )
+            
+            self.keyboard_listener.start()
+            self.mouse_listener.start()
+            self.is_monitoring = True
+            self.last_activity_time = time.time()
+            
+            logger.info(f"사용자 활동 모니터링 시작 (대기 시간: {self.idle_threshold}초)")
+            return True
+        
+        except Exception as e:
+            logger.error(f"사용자 활동 모니터링 시작 실패: {e}")
+            return False
+    
+    def stop(self):
+        """모니터링 중지"""
+        if not self.is_monitoring:
+            return
+        
+        try:
+            if self.keyboard_listener:
+                self.keyboard_listener.stop()
+            if self.mouse_listener:
+                self.mouse_listener.stop()
+            
+            self.is_monitoring = False
+            logger.info("사용자 활동 모니터링 중지됨")
+        
+        except Exception as e:
+            logger.error(f"사용자 활동 모니터링 중지 오류: {e}")
+    
+    def _on_activity(self, *args, **kwargs):
+        """사용자 활동 감지 시 호출"""
+        with self._lock:
+            self.last_activity_time = time.time()
+    
+    def is_user_active(self) -> bool:
+        """
+        사용자가 활동 중인지 확인
+        
+        Returns:
+            True면 최근 활동 있음 (대기 필요), False면 유휴 상태 (인덱싱 진행 가능)
+        """
+        with self._lock:
+            elapsed = time.time() - self.last_activity_time
+            return elapsed < self.idle_threshold
+    
+    def wait_until_idle(self, check_interval: float = 1.0, stop_flag: threading.Event = None) -> bool:
+        """
+        사용자가 유휴 상태가 될 때까지 대기
+        
+        Args:
+            check_interval: 체크 간격 (초)
+            stop_flag: 중지 플래그 (인덱싱 중단 시 사용)
+        
+        Returns:
+            True면 유휴 상태 도달, False면 중지 요청됨
+        """
+        while self.is_user_active():
+            if stop_flag and stop_flag.is_set():
+                return False
+            
+            # 사용자 활동 중 - 대기
+            time.sleep(check_interval)
+        
+        return True
+    
+    def get_idle_time(self) -> float:
+        """마지막 활동 이후 경과 시간 (초) 반환"""
+        with self._lock:
+            return time.time() - self.last_activity_time
+
+
 class FileIndexer:
     """파일 인덱싱 엔진 - Worker Thread에서 실행"""
     
@@ -215,13 +337,14 @@ class FileIndexer:
         'C:\\swapfile.sys'
     ]
     
-    def __init__(self, db_manager: DatabaseManager, log_dir: str = None):
+    def __init__(self, db_manager: DatabaseManager, log_dir: str = None, enable_activity_monitor: bool = True):
         """
         파일 인덱서 초기화
         
         Args:
             db_manager: 데이터베이스 매니저 인스턴스
             log_dir: 로그 파일 디렉토리 (기본: python-backend/logs)
+            enable_activity_monitor: 사용자 활동 모니터링 활성화 여부
         """
         self.db = db_manager
         self.is_running = False
@@ -260,6 +383,11 @@ class FileIndexer:
         self.indexing_logs_lock = threading.Lock()
         self.max_logs = 500
         
+        # 사용자 활동 모니터링 (키보드/마우스 입력 감지)
+        self.activity_monitor = UserActivityMonitor(idle_threshold=3.0) if enable_activity_monitor else None
+        self.enable_activity_monitor = enable_activity_monitor
+        self.paused_count = 0  # 일시정지된 횟수 (통계용)
+        
         # 통계
         self.stats = {
             'total_files': 0,
@@ -270,7 +398,8 @@ class FileIndexer:
             'modified_files': 0,
             'deleted_files': 0,
             'start_time': None,
-            'end_time': None
+            'end_time': None,
+            'paused_count': 0
         }
     
     def add_exclusion_pattern(self, pattern: str):
@@ -706,6 +835,11 @@ class FileIndexer:
         logger.info("========================================")
         
         try:
+            # 0단계: 사용자 활동 모니터 중지
+            if self.activity_monitor:
+                logger.info("0단계: 사용자 활동 모니터 중지...")
+                self.activity_monitor.stop()
+            
             # 1단계: stop_flag 설정
             self.stop_flag.set()
             self.retry_stop_flag.set()
@@ -780,8 +914,14 @@ class FileIndexer:
             'modified_files': 0,
             'deleted_files': 0,
             'start_time': time.time(),
-            'end_time': None
+            'end_time': None,
+            'paused_count': 0
         }
+        
+        # 사용자 활동 모니터링 시작
+        if self.activity_monitor and self.enable_activity_monitor:
+            self.activity_monitor.start()
+            logger.info("사용자 활동 모니터링 활성화: 키보드/마우스 입력 감지 시 자동 일시정지")
         
         logger.info(f"인덱싱 시작: {root_paths}")
         self._update_status("파일 수집 중...")
@@ -824,9 +964,15 @@ class FileIndexer:
                 self.log_callback('Error', '인덱싱 중단', f'{type(e).__name__}: {str(e)}')
         
         finally:
+            # 사용자 활동 모니터링 중지
+            if self.activity_monitor:
+                self.activity_monitor.stop()
+            
             self.stats['end_time'] = time.time()
             elapsed = self.stats['end_time'] - self.stats['start_time']
             summary = f"완료: {self.stats['indexed_files']}개 인덱싱 ({elapsed:.2f}초)"
+            if self.stats['paused_count'] > 0:
+                summary += f" | 일시정지 {self.stats['paused_count']}회"
             logger.info(summary)
             self._update_status(summary)
             self.is_running = False
@@ -852,6 +998,30 @@ class FileIndexer:
                     self.log_callback('Info', '인덱싱 중지', '사용자가 중지를 요청했습니다')
                 break
             
+            # 사용자 활동 체크 - 키보드/마우스 입력 감지 시 대기
+            if self.activity_monitor and self.enable_activity_monitor:
+                if self.activity_monitor.is_user_active():
+                    # 사용자 활동 감지 - 일시정지
+                    self.stats['paused_count'] += 1
+                    idle_time = self.activity_monitor.get_idle_time()
+                    logger.info(f"사용자 활동 감지 (마지막 활동: {idle_time:.1f}초 전) - 인덱싱 일시정지")
+                    self._update_status(f"사용자 활동 감지 - 3초 대기 중...")
+                    
+                    # UI 로그
+                    if self.log_callback:
+                        self.log_callback('Info', '일시정지', '사용자 활동 감지 - 3초 대기 중')
+                    
+                    # 유휴 상태가 될 때까지 대기 (3초 동안 입력 없을 때까지)
+                    if not self.activity_monitor.wait_until_idle(check_interval=0.5, stop_flag=self.stop_flag):
+                        # 중지 요청됨
+                        break
+                    
+                    # 재개
+                    logger.info("사용자 활동 없음 (3초 경과) - 인덱싱 재개")
+                    self._update_status("인덱싱 재개 중...")
+                    if self.log_callback:
+                        self.log_callback('Info', '재개', '인덱싱 재개됨')
+            
             # 진행 상황 체크 (2분 이상 멈춤 감지)
             current_time = time.time()
             if current_time - last_progress_time > stall_warning_threshold:
@@ -865,6 +1035,14 @@ class FileIndexer:
                 # 진행 상황 콜백
                 if self.progress_callback:
                     self.progress_callback(i + 1, len(all_files), file_path)
+                
+                # 파일 잠금 체크 (사용자가 파일을 열어서 사용 중인지)
+                if self._is_file_locked(file_path):
+                    self._log_skip(file_path, "File is open by user - will retry later")
+                    self.stats['skipped_files'] += 1
+                    # 재시도 목록에 추가
+                    self._add_to_retry_queue(file_path, "File is open by user")
+                    continue
                 
                 # 파일 크기 체크 (100MB 초과 시 스킵)
                 try:
@@ -1203,25 +1381,37 @@ class FileIndexer:
     
     def _is_file_locked(self, file_path: str) -> bool:
         """
-        파일이 다른 프로세스에서 사용 중인지 간단히 확인
+        파일이 다른 프로세스에서 사용 중인지 확인 (강화된 체크)
+        
+        - 단순 읽기 가능 여부만 체크하는 것이 아니라
+        - 실제로 쓰기 잠금이 걸려있는지 확인
         
         Args:
             file_path: 파일 경로
         
         Returns:
-            True면 파일이 잠겨있음
+            True면 파일이 잠겨있음 (사용자가 열어서 사용 중)
         """
         try:
-            # 간단한 읽기 시도로 파일 접근 가능 여부만 확인
-            # 실제로 열려있어도 읽기는 가능한 경우가 많으므로
-            # 텍스트 추출 단계에서 처리하는 것이 더 안전
-            with open(file_path, 'rb') as f:
+            # Windows에서 파일이 열려있는지 확인하는 더 정확한 방법
+            # 'r+b' 모드로 열기 시도 - 다른 프로그램이 독점 모드로 열었으면 실패
+            with open(file_path, 'r+b') as f:
                 # 첫 바이트만 읽어보기
                 f.read(1)
             return False
-        except (PermissionError, IOError, OSError):
-            # 권한 없거나 접근 불가
+        except PermissionError:
+            # 권한 없거나 다른 프로그램이 독점 사용 중
             return True
+        except IOError as e:
+            # 파일이 사용 중인 경우 (errno 13: Permission denied)
+            if e.errno == 13:
+                return True
+            return False
+        except OSError as e:
+            # 파일이 사용 중인 경우
+            if e.errno == 13 or 'being used' in str(e).lower() or 'locked' in str(e).lower():
+                return True
+            return False
         except Exception:
             # 기타 오류는 잠금으로 간주하지 않음
             return False
@@ -1618,6 +1808,17 @@ class FileIndexer:
             for file_path in files_to_retry:
                 if self.retry_stop_flag.is_set():
                     break
+                
+                # 사용자 활동 체크 (재시도 워커에도 적용)
+                if self.activity_monitor and self.enable_activity_monitor:
+                    if self.activity_monitor.is_user_active():
+                        # 사용자 활동 감지 - 대기
+                        logger.debug(f"재시도 워커: 사용자 활동 감지 - 대기 중...")
+                        # 유휴 상태가 될 때까지 대기
+                        if not self.activity_monitor.wait_until_idle(check_interval=0.5, stop_flag=self.retry_stop_flag):
+                            # 중지 요청됨
+                            break
+                        logger.debug("재시도 워커: 사용자 활동 없음 - 재개")
                 
                 try:
                     # 파일이 존재하는지 확인

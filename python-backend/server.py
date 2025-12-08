@@ -94,8 +94,25 @@ search_engine: SearchEngine = None
 
 
 def initialize():
-    """백엔드 초기화"""
+    """백엔드 초기화 (설정 파일 기반)"""
     global db_manager, indexer, search_engine
+    
+    logger.info("========================================")
+    logger.info("Python 백엔드 초기화 (가상환경)")
+    logger.info("========================================")
+    logger.info(f"Python 실행 파일: {sys.executable}")
+    logger.info(f"Python 버전: {sys.version}")
+    logger.info(f"작업 디렉토리: {os.getcwd()}")
+    
+    # 환경 변수에서 설정 읽기 (config.json에서 전달된 값)
+    enable_activity_monitor = os.getenv('ENABLE_ACTIVITY_MONITOR', 'true').lower() == 'true'
+    logger.info(f"  - 사용자 활동 모니터링: {enable_activity_monitor}")
+    
+    if enable_activity_monitor:
+        idle_threshold = float(os.getenv('IDLE_THRESHOLD', '3.0'))
+        logger.info(f"  - 유휴 대기 시간: {idle_threshold}초")
+    
+    logger.info("========================================")
     
     # 데이터베이스 경로
     db_path = os.path.join(os.path.dirname(__file__), "file_index.db")
@@ -104,9 +121,9 @@ def initialize():
     db_manager = DatabaseManager(db_path)
     logger.info(f"데이터베이스 초기화: {db_path}")
     
-    # 인덱서 초기화
-    indexer = FileIndexer(db_manager)
-    logger.info("파일 인덱서 초기화 완료")
+    # 인덱서 초기화 (설정 기반)
+    indexer = FileIndexer(db_manager, enable_activity_monitor=enable_activity_monitor)
+    logger.info(f"파일 인덱서 초기화 완료 (활동 모니터: {enable_activity_monitor})")
     
     # 검색 엔진 초기화
     search_engine = SearchEngine(db_manager)
