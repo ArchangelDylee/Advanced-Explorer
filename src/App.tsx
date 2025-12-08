@@ -1318,7 +1318,7 @@ export default function App() {
             <div onClick={(e) => { e.stopPropagation(); if(tabs.length > 1) { const remain = tabs.filter(t=>t.id!==tab.id); setTabs(remain); if(tab.id===activeTabId) setActiveTabId(remain[remain.length-1].id); }}} className="p-0.5 rounded hover:bg-[#333] hover:text-red-400 opacity-0 group-hover:opacity-100 active:scale-90 transition-transform duration-100"><X size={12} /></div>
           </div>
         ))}
-        <button onClick={() => { const id = nextTabId; setTabs([...tabs, { id, title: '내 PC', searchText: '', selectedFolder: '내 PC', currentPath: 'My Computer', selectedFile: null, files: [], sortConfig: {key:null, direction:'asc'}, history: [{name:'내 PC', path:'My Computer'}], historyIndex: 0 }]); setNextTabId(id+1); setActiveTabId(id); }} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
+        <button onClick={() => { const id = nextTabId; setTabs([...tabs, { id, title: '내 PC', searchText: '', selectedFolder: '내 PC', currentPath: 'My Computer', selectedFile: null, files: [], sortConfig: {key:null, direction:'asc'}, history: [{name:'내 PC', path:'My Computer'}], historyIndex: 0 }]); setNextTabId(id+1); setActiveTabId(id); }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
         <div className="flex-1 h-full" style={{ WebkitAppRegion: 'drag' } as any}></div>
       </div>
 
