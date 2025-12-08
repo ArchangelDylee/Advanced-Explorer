@@ -611,7 +611,11 @@ class FileIndexer:
             path: 파일 경로
         """
         filename = os.path.basename(path)
-        detail = '처리 중...'
+        directory = os.path.dirname(path)
+        # 디렉토리 경로를 상대적으로 표시 (너무 길면 생략)
+        if len(directory) > 60:
+            directory = '...' + directory[-57:]
+        detail = f'처리 중... [{directory}]'
         
         # 통합 로그에 기록
         self._write_indexing_log('Indexing', path, detail)
@@ -794,6 +798,13 @@ class FileIndexer:
                     is_new = True
                     self.stats['new_files'] += 1
                 
+                # 중지 요청 체크 (파일 처리 전)
+                if self.stop_flag.is_set():
+                    logger.info("인덱싱 중지됨 (사용자 요청 - 파일 처리 전)")
+                    if self.log_callback:
+                        self.log_callback('Info', '인덱싱 중지', '사용자가 중지를 요청했습니다')
+                    break
+                
                 # 현재 처리 중인 파일 로그
                 self._log_indexing(file_path)
                 
@@ -823,6 +834,13 @@ class FileIndexer:
                     
                     # 배치가 가득 찼으면 DB에 저장
                     if len(batch) >= batch_size:
+                        # 중지 요청 체크 (배치 저장 전)
+                        if self.stop_flag.is_set():
+                            logger.info("인덱싱 중지됨 (사용자 요청 - 배치 저장 전)")
+                            if self.log_callback:
+                                self.log_callback('Info', '인덱싱 중지', '사용자가 중지를 요청했습니다')
+                            break
+                        
                         try:
                             # 배치 저장 (토큰 수 제외)
                             batch_for_db = [(path, content, mtime) for path, content, mtime, _ in batch]

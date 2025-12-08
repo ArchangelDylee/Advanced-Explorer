@@ -360,6 +360,49 @@ export default function App() {
     return () => clearInterval(statsInterval);
   }, []);
 
+  // Sync indexing status from backend
+  useEffect(() => {
+    let syncTimeout: NodeJS.Timeout;
+    let syncInterval: NodeJS.Timeout;
+
+    const checkIndexingStatus = async () => {
+      try {
+        const status = await BackendAPI.getIndexingStatus();
+        
+        // 백엔드의 실제 인덱싱 상태와 프론트엔드 상태 동기화
+        if (status.is_running && !isIndexing) {
+          setIsIndexing(true);
+          setIsIndexStopping(false);
+          setIndexingStatus('인덱싱 진행 중...');
+        } else if (!status.is_running && isIndexing) {
+          setIsIndexing(false);
+          setIsIndexStopping(false);
+          setIndexingStatus('대기 중...');
+        }
+        
+        // 통계 업데이트
+        if (status.stats) {
+          setIndexingStats(status.stats);
+        }
+      } catch (error) {
+        // 백엔드가 준비되지 않았을 수 있으므로 조용히 무시
+        // console.log('인덱싱 상태 체크 실패 (백엔드 준비 중일 수 있음)');
+      }
+    };
+
+    // 초기 지연 10초 후 시작 (백엔드가 완전히 초기화될 시간 제공)
+    syncTimeout = setTimeout(() => {
+      checkIndexingStatus(); // 첫 번째 체크
+      // 5초마다 주기적으로 체크
+      syncInterval = setInterval(checkIndexingStatus, 5000);
+    }, 10000);
+
+    return () => {
+      if (syncTimeout) clearTimeout(syncTimeout);
+      if (syncInterval) clearInterval(syncInterval);
+    };
+  }, [isIndexing]); // isIndexing 상태가 변경될 때마다 재설정
+
   // Auto-refresh indexing DB view every 1 minute
   useEffect(() => {
     if (!showIndexingLog) return;
@@ -768,7 +811,22 @@ export default function App() {
 
   // --- Indexing Functions ---
   const getSelectedDirectory = (): string | null => {
-    // 1순위: 폴더 트리에서 선택된 디렉토리 찾기
+    // 1순위: 파일 목록(파일 트리)에서 선택된 디렉토리 (폴더만)
+    if (activeTab.selectedFile && activeTab.selectedFile.type === 'folder' && activeTab.selectedFile.path) {
+      return activeTab.selectedFile.path;
+    }
+
+    // 2순위: 즐겨찾기에서 선택된 항목
+    // 즐겨찾기를 클릭하면 activeTab.selectedFolder와 currentPath가 설정됨
+    // FAVORITES 배열에 포함된 경로인지 확인
+    if (activeTab.currentPath) {
+      const isFavorite = FAVORITES.some(fav => fav.path === activeTab.currentPath);
+      if (isFavorite) {
+        return activeTab.currentPath;
+      }
+    }
+
+    // 3순위: 폴더 트리에서 선택된 디렉토리
     const findSelectedInTree = (nodes: FolderNode[]): string | null => {
       for (const node of nodes) {
         if (node.selected && node.path) {
@@ -785,7 +843,7 @@ export default function App() {
     const selectedFromTree = findSelectedInTree(folderStructure);
     if (selectedFromTree) return selectedFromTree;
 
-    // 2순위: 현재 탭의 경로 사용
+    // 4순위: 현재 탭의 경로 사용 (즐겨찾기나 폴더 트리가 아닌 경우)
     if (activeTab.currentPath) {
       return activeTab.currentPath;
     }
