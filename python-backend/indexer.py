@@ -1715,7 +1715,8 @@ class FileIndexer:
             # 2단계: 임시 파일로 COM 작업 (원본 파일은 절대 건드리지 않음)
             pythoncom.CoInitialize()
             
-            word = win32com.client.Dispatch("Word.Application")
+            # DispatchEx로 완전히 새로운 Word 인스턴스 생성 (사용자 Word와 격리)
+            word = win32com.client.DispatchEx("Word.Application")
             word.Visible = False
             word.DisplayAlerts = False
             
@@ -1780,7 +1781,8 @@ class FileIndexer:
             # 2단계: 임시 파일로 COM 작업
             pythoncom.CoInitialize()
             
-            ppt = win32com.client.Dispatch("PowerPoint.Application")
+            # DispatchEx로 완전히 새로운 PowerPoint 인스턴스 생성 (사용자 PowerPoint와 격리)
+            ppt = win32com.client.DispatchEx("PowerPoint.Application")
             ppt.Visible = False
             ppt.DisplayAlerts = False
             
@@ -1899,7 +1901,8 @@ class FileIndexer:
             # 2단계: 임시 파일로 COM 작업
             pythoncom.CoInitialize()
             
-            excel = win32com.client.Dispatch("Excel.Application")
+            # DispatchEx로 완전히 새로운 Excel 인스턴스 생성 (사용자 Excel과 격리)
+            excel = win32com.client.DispatchEx("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
             
@@ -1992,17 +1995,30 @@ class FileIndexer:
     def _extract_hwp(self, file_path: str) -> Optional[str]:
         """
         HWP 파일에서 텍스트 추출
-        1차: pywin32 COM 객체 시도
+        1차: pywin32 COM 객체 시도 (임시 파일 사용)
         2차: olefile 라이브러리 시도
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         # 1차 시도: COM 객체 (가장 정확)
         if WIN32COM_AVAILABLE:
             try:
+                # 임시 파일 복사
+                temp_file = self._copy_to_temp(file_path)
+                
+                if not temp_file:
+                    logger.info(f"⛔ HWP 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                    self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                    return None
+                
                 pythoncom.CoInitialize()
                 
-                hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+                # DispatchEx로 완전히 새로운 한글 인스턴스 생성 (사용자 한글과 격리)
+                hwp = win32com.client.DispatchEx("HWPFrame.HwpObject")
                 hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
-                hwp.Open(file_path)
+                hwp.Open(temp_file)  # 임시 파일 사용!
                 
                 hwp.InitScan()
                 text_parts = []
@@ -2018,30 +2034,68 @@ class FileIndexer:
                 
                 pythoncom.CoUninitialize()
                 
-                return ''.join(text_parts)[:100000]
+                logger.info(f"✅ HWP 파일 인덱싱 완료 (임시 복사본 사용): {os.path.basename(file_path)}")
+                
+                result = ''.join(text_parts)[:100000]
+                
+                # 임시 파일 정리
+                if temp_file:
+                    self._cleanup_temp(temp_file)
+                
+                return result
+                
             except Exception as e:
                 logger.debug(f"HWP COM 추출 오류 [{file_path}]: {e}")
+                try:
+                    hwp.Quit()
+                except:
+                    pass
                 try:
                     pythoncom.CoUninitialize()
                 except:
                     pass
+                # 임시 파일 정리
+                if temp_file:
+                    self._cleanup_temp(temp_file)
         
-        # 2차 시도: olefile (제한적)
+        # 2차 시도: olefile (제한적) - 임시 파일 사용
         if OLEFILE_AVAILABLE:
             try:
-                ole = olefile.OleFileIO(file_path)
+                if not temp_file:
+                    temp_file = self._copy_to_temp(file_path)
+                
+                if not temp_file:
+                    return None
+                
+                ole = olefile.OleFileIO(temp_file)
                 if ole.exists('PrvText'):
                     stream = ole.openstream('PrvText')
                     data = stream.read()
                     # HWP 텍스트는 UTF-16LE 인코딩
                     text = data.decode('utf-16le', errors='ignore')
                     ole.close()
+                    
+                    logger.debug(f"✅ HWP 파일 인덱싱 완료 (olefile, 임시 복사본): {os.path.basename(file_path)}")
+                    
+                    # 임시 파일 정리
+                    if temp_file:
+                        self._cleanup_temp(temp_file)
+                    
                     return text[:100000]
                 ole.close()
             except Exception as e:
                 logger.debug(f"HWP olefile 추출 오류 [{file_path}]: {e}")
+            finally:
+                # 임시 파일 정리
+                if temp_file:
+                    self._cleanup_temp(temp_file)
         
         logger.debug(f"HWP 파일 추출 실패 [{file_path}]: 지원 라이브러리 없음")
+        
+        # 마지막 정리
+        if temp_file:
+            self._cleanup_temp(temp_file)
+        
         return None
     
     def get_stats(self) -> dict:
