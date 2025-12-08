@@ -16,6 +16,8 @@ import signal
 from functools import wraps
 import re
 import unicodedata
+import shutil
+import tempfile
 
 # 텍스트 추출 라이브러리
 import chardet  # 인코딩 자동 감지
@@ -179,7 +181,7 @@ class UserActivityMonitor:
     활동이 감지되면 인덱싱을 일시정지합니다.
     """
     
-    def __init__(self, idle_threshold: float = 3.0):
+    def __init__(self, idle_threshold: float = 2.0):
         """
         Args:
             idle_threshold: 사용자 활동이 없는 시간 (초) - 이 시간이 지나면 인덱싱 재개
@@ -384,7 +386,7 @@ class FileIndexer:
         self.max_logs = 500
         
         # 사용자 활동 모니터링 (키보드/마우스 입력 감지)
-        self.activity_monitor = UserActivityMonitor(idle_threshold=3.0) if enable_activity_monitor else None
+        self.activity_monitor = UserActivityMonitor(idle_threshold=2.0) if enable_activity_monitor else None
         self.enable_activity_monitor = enable_activity_monitor
         self.paused_count = 0  # 일시정지된 횟수 (통계용)
         
@@ -1005,19 +1007,19 @@ class FileIndexer:
                     self.stats['paused_count'] += 1
                     idle_time = self.activity_monitor.get_idle_time()
                     logger.info(f"사용자 활동 감지 (마지막 활동: {idle_time:.1f}초 전) - 인덱싱 일시정지")
-                    self._update_status(f"사용자 활동 감지 - 3초 대기 중...")
+                    self._update_status(f"사용자 활동 감지 - 2초 대기 중...")
                     
                     # UI 로그
                     if self.log_callback:
-                        self.log_callback('Info', '일시정지', '사용자 활동 감지 - 3초 대기 중')
+                        self.log_callback('Info', '일시정지', '사용자 활동 감지 - 2초 대기 중')
                     
-                    # 유휴 상태가 될 때까지 대기 (3초 동안 입력 없을 때까지)
+                    # 유휴 상태가 될 때까지 대기 (2초 동안 입력 없을 때까지)
                     if not self.activity_monitor.wait_until_idle(check_interval=0.5, stop_flag=self.stop_flag):
                         # 중지 요청됨
                         break
                     
                     # 재개
-                    logger.info("사용자 활동 없음 (3초 경과) - 인덱싱 재개")
+                    logger.info("사용자 활동 없음 (2초 경과) - 인덱싱 재개")
                     self._update_status("인덱싱 재개 중...")
                     if self.log_callback:
                         self.log_callback('Info', '재개', '인덱싱 재개됨')
@@ -1379,42 +1381,124 @@ class FileIndexer:
             return False
         return name[0].isalnum() or ord(name[0]) >= 0xAC00  # 영문, 숫자, 한글
     
+    def _copy_to_temp(self, file_path: str) -> Optional[str]:
+        """
+        파일을 임시 폴더에 복사
+        
+        사용자가 열어서 사용 중인 파일을 건드리지 않기 위해
+        복사본을 만들어서 인덱싱합니다.
+        
+        Args:
+            file_path: 원본 파일 경로
+        
+        Returns:
+            임시 파일 경로 또는 None (복사 실패 시)
+        """
+        try:
+            # 파일이 잠겨있는지 먼저 체크
+            if self._is_file_locked(file_path):
+                logger.info(f"⛔ 파일이 잠겨있어 복사 불가: {os.path.basename(file_path)}")
+                return None
+            
+            # 임시 디렉토리 생성
+            temp_dir = tempfile.mkdtemp(prefix='indexer_')
+            
+            # 파일명 가져오기
+            filename = os.path.basename(file_path)
+            temp_file_path = os.path.join(temp_dir, filename)
+            
+            # 파일 복사
+            shutil.copy2(file_path, temp_file_path)
+            
+            logger.debug(f"임시 파일 복사 완료: {filename}")
+            return temp_file_path
+            
+        except Exception as e:
+            logger.debug(f"임시 파일 복사 실패 [{file_path}]: {e}")
+            return None
+    
+    def _cleanup_temp(self, temp_file_path: str):
+        """
+        임시 파일 및 폴더 정리
+        
+        Args:
+            temp_file_path: 임시 파일 경로
+        """
+        try:
+            if temp_file_path and os.path.exists(temp_file_path):
+                # 임시 디렉토리 전체 삭제
+                temp_dir = os.path.dirname(temp_file_path)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                logger.debug(f"임시 파일 정리 완료: {os.path.basename(temp_file_path)}")
+        except Exception as e:
+            logger.debug(f"임시 파일 정리 오류: {e}")
+    
     def _is_file_locked(self, file_path: str) -> bool:
         """
-        파일이 다른 프로세스에서 사용 중인지 확인 (강화된 체크)
+        파일이 다른 프로세스에서 사용 중인지 확인 (최강화 버전)
         
-        - 단순 읽기 가능 여부만 체크하는 것이 아니라
-        - 실제로 쓰기 잠금이 걸려있는지 확인
+        사용자가 열어서 사용 중인 파일은 절대 건드리지 않습니다!
         
         Args:
             file_path: 파일 경로
         
         Returns:
-            True면 파일이 잠겨있음 (사용자가 열어서 사용 중)
+            True면 파일이 잠겨있음 (사용자가 열어서 사용 중) - 절대 건드리지 않음!
         """
+        import errno
+        
+        # 방법 1: 독점 쓰기 모드로 열기 시도
         try:
-            # Windows에서 파일이 열려있는지 확인하는 더 정확한 방법
             # 'r+b' 모드로 열기 시도 - 다른 프로그램이 독점 모드로 열었으면 실패
-            with open(file_path, 'r+b') as f:
-                # 첫 바이트만 읽어보기
-                f.read(1)
-            return False
+            file_handle = open(file_path, 'r+b')
+            file_handle.close()
         except PermissionError:
             # 권한 없거나 다른 프로그램이 독점 사용 중
+            logger.debug(f"파일 잠금 감지 (PermissionError): {file_path}")
             return True
         except IOError as e:
-            # 파일이 사용 중인 경우 (errno 13: Permission denied)
-            if e.errno == 13:
-                return True
-            return False
-        except OSError as e:
             # 파일이 사용 중인 경우
-            if e.errno == 13 or 'being used' in str(e).lower() or 'locked' in str(e).lower():
+            if e.errno in [errno.EACCES, errno.EPERM, 13, 32]:
+                logger.debug(f"파일 잠금 감지 (IOError {e.errno}): {file_path}")
                 return True
-            return False
-        except Exception:
-            # 기타 오류는 잠금으로 간주하지 않음
-            return False
+        except OSError as e:
+            # Windows 특화: 다른 프로세스가 파일을 사용 중
+            error_msg = str(e).lower()
+            if e.errno in [errno.EACCES, errno.EPERM, 13, 32] or \
+               'being used' in error_msg or \
+               'locked' in error_msg or \
+               'access denied' in error_msg or \
+               'permission denied' in error_msg:
+                logger.debug(f"파일 잠금 감지 (OSError): {file_path}")
+                return True
+        except Exception as e:
+            # 예상치 못한 오류 - 안전하게 잠금으로 간주
+            logger.debug(f"파일 체크 중 예외 발생 (안전하게 Skip): {file_path} - {e}")
+            return True
+        
+        # 방법 2: Windows msvcrt를 사용한 추가 체크 (Python 3.8+)
+        if sys.platform == 'win32':
+            try:
+                import msvcrt
+                # 파일을 열어서 잠금 시도
+                file_handle = open(file_path, 'rb')
+                try:
+                    # 파일 전체에 대한 잠금 시도 (non-blocking)
+                    msvcrt.locking(file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    # 잠금 성공 - 즉시 해제
+                    msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    file_handle.close()
+                except (IOError, OSError):
+                    # 잠금 실패 - 다른 프로세스가 사용 중
+                    file_handle.close()
+                    logger.debug(f"파일 잠금 감지 (msvcrt): {file_path}")
+                    return True
+            except Exception:
+                # msvcrt 체크 실패 - 기본값(안전) 사용
+                pass
+        
+        # 모든 체크 통과 - 파일이 잠겨있지 않음
+        return False
     
     
     def _extract_text(self, file_path: str) -> Optional[str]:
@@ -1469,11 +1553,24 @@ class FileIndexer:
         """
         텍스트 파일 읽기 (인코딩 자동 감지)
         UTF-8 → CP949 → chardet 순서로 시도
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         try:
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ 텍스트 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일에서 텍스트 추출
             # 1차 시도: UTF-8
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(temp_file, 'r', encoding='utf-8') as f:
                     content = f.read()
                     return content[:100000]  # 최대 100KB
             except (UnicodeDecodeError, UnicodeError):
@@ -1481,14 +1578,14 @@ class FileIndexer:
             
             # 2차 시도: CP949 (한글 Windows 기본 인코딩)
             try:
-                with open(file_path, 'r', encoding='cp949') as f:
+                with open(temp_file, 'r', encoding='cp949') as f:
                     content = f.read()
                     return content[:100000]
             except (UnicodeDecodeError, UnicodeError):
                 pass
             
             # 3차 시도: chardet 자동 감지
-            with open(file_path, 'rb') as f:
+            with open(temp_file, 'rb') as f:
                 raw_data = f.read(1000000)  # 최대 1MB 읽기
                 result = chardet.detect(raw_data)
                 encoding = result['encoding']
@@ -1501,62 +1598,152 @@ class FileIndexer:
                         pass
             
             # 최종: ignore 모드로 UTF-8 시도
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(temp_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
                 return content[:100000]
         
         except Exception as e:
             logger.debug(f"텍스트 파일 읽기 오류 [{file_path}]: {e}")
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_docx(self, file_path: str) -> Optional[str]:
-        """Word 문서에서 텍스트 추출"""
+        """
+        Word 문서에서 텍스트 추출
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        """
+        temp_file = None
+        
         try:
-            doc = docx.Document(file_path)
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ DOCX 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일에서 텍스트 추출
+            doc = docx.Document(temp_file)
             text = '\n'.join([para.text for para in doc.paragraphs])
+            
+            logger.debug(f"✅ DOCX 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
+            
             return text[:100000]
+            
         except Exception as e:
-            logger.debug(f"DOCX 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ DOCX 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"DOCX 추출 오류 [{file_path}]: {e}")
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_pptx(self, file_path: str) -> Optional[str]:
-        """PowerPoint에서 텍스트 추출"""
+        """
+        PowerPoint에서 텍스트 추출
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        """
+        temp_file = None
+        
         try:
-            prs = Presentation(file_path)
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ PPTX 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일에서 텍스트 추출
+            prs = Presentation(temp_file)
             text_parts = []
             for slide in prs.slides:
                 for shape in slide.shapes:
                     if hasattr(shape, "text"):
                         text_parts.append(shape.text)
+            
+            logger.debug(f"✅ PPTX 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
+            
             return '\n'.join(text_parts)[:100000]
+            
         except Exception as e:
-            logger.debug(f"PPTX 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ PPTX 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"PPTX 추출 오류 [{file_path}]: {e}")
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_doc(self, file_path: str) -> Optional[str]:
         """
         구버전 Word 문서(.doc)에서 텍스트 추출
         pywin32 COM 객체 사용 (Windows 전용)
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         try:
-            # COM 초기화 (백그라운드 스레드에서 필수)
+            # 1단계: 원본 파일을 임시 폴더에 복사 (사용자 파일 보호)
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                # 복사 실패 (파일이 잠겨있거나 접근 불가)
+                logger.info(f"⛔ DOC 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일로 COM 작업 (원본 파일은 절대 건드리지 않음)
             pythoncom.CoInitialize()
             
             word = win32com.client.Dispatch("Word.Application")
             word.Visible = False
             word.DisplayAlerts = False
             
-            # ReadOnly=True로 열어서 사용자가 연 파일과 충돌 방지
-            doc = word.Documents.Open(file_path, ReadOnly=True)
+            # 임시 파일 열기 (원본 파일 X)
+            doc = word.Documents.Open(
+                temp_file,  # 임시 파일 사용!
+                ReadOnly=True,
+                ConfirmConversions=False,
+                AddToRecentFiles=False
+            )
             text = doc.Content.Text
             doc.Close(False)
             word.Quit()
             
             pythoncom.CoUninitialize()
             
+            logger.info(f"✅ DOC 파일 인덱싱 완료 (임시 복사본 사용): {os.path.basename(file_path)}")
+            
             return text[:100000]
+            
         except Exception as e:
-            logger.debug(f"DOC 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            if 'being used' in error_msg or 'locked' in error_msg or 'access denied' in error_msg:
+                logger.info(f"⛔ DOC 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"DOC 추출 오류 [{file_path}]: {e}")
+            
             try:
                 word.Quit()
             except:
@@ -1566,22 +1753,39 @@ class FileIndexer:
             except:
                 pass
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_ppt(self, file_path: str) -> Optional[str]:
         """
         구버전 PowerPoint(.ppt)에서 텍스트 추출
         pywin32 COM 객체 사용 (Windows 전용)
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         try:
-            # COM 초기화
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ PPT 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일로 COM 작업
             pythoncom.CoInitialize()
             
             ppt = win32com.client.Dispatch("PowerPoint.Application")
             ppt.Visible = False
             ppt.DisplayAlerts = False
             
-            # ReadOnly=True로 열어서 사용자가 연 파일과 충돌 방지
-            presentation = ppt.Presentations.Open(file_path, ReadOnly=True, WithWindow=False)
+            # 임시 파일 열기
+            presentation = ppt.Presentations.Open(temp_file, ReadOnly=True, WithWindow=False)
             text_parts = []
             
             for slide in presentation.Slides:
@@ -1595,9 +1799,18 @@ class FileIndexer:
             
             pythoncom.CoUninitialize()
             
+            logger.info(f"✅ PPT 파일 인덱싱 완료 (임시 복사본 사용): {os.path.basename(file_path)}")
+            
             return '\n'.join(text_parts)[:100000]
+            
         except Exception as e:
-            logger.debug(f"PPT 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            if 'being used' in error_msg or 'locked' in error_msg or 'access denied' in error_msg:
+                logger.info(f"⛔ PPT 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"PPT 추출 오류 [{file_path}]: {e}")
+            
             try:
                 ppt.Quit()
             except:
@@ -1607,14 +1820,32 @@ class FileIndexer:
             except:
                 pass
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_xlsx(self, file_path: str) -> Optional[str]:
         """
         Excel 문서(.xlsx)에서 텍스트 추출
         openpyxl 사용, data_only=True로 수식 제외 값만 추출
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         try:
-            workbook = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ XLSX 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일에서 텍스트 추출
+            workbook = openpyxl.load_workbook(temp_file, data_only=True, read_only=True)
             text_parts = []
             
             # 모든 시트 순회
@@ -1628,26 +1859,52 @@ class FileIndexer:
                             text_parts.append(str(cell_value))
             
             workbook.close()
+            
+            logger.debug(f"✅ XLSX 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
+            
             return ' '.join(text_parts)[:100000]
+            
         except Exception as e:
-            logger.debug(f"XLSX 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ XLSX 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"XLSX 추출 오류 [{file_path}]: {e}")
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_xls(self, file_path: str) -> Optional[str]:
         """
         레거시 Excel(.xls)에서 텍스트 추출
         pywin32 COM 객체 사용 (Windows 전용)
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         try:
-            # COM 초기화
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ XLS 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일로 COM 작업
             pythoncom.CoInitialize()
             
             excel = win32com.client.Dispatch("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
             
-            # ReadOnly=True로 열어서 사용자가 연 파일과 충돌 방지
-            workbook = excel.Workbooks.Open(file_path, ReadOnly=True)
+            # 임시 파일 열기
+            workbook = excel.Workbooks.Open(temp_file, ReadOnly=True)
             text_parts = []
             
             # 모든 시트 순회
@@ -1663,9 +1920,18 @@ class FileIndexer:
             
             pythoncom.CoUninitialize()
             
+            logger.info(f"✅ XLS 파일 인덱싱 완료 (임시 복사본 사용): {os.path.basename(file_path)}")
+            
             return ' '.join(text_parts)[:100000]
+            
         except Exception as e:
-            logger.debug(f"XLS 추출 오류 [{file_path}]: {e}")
+            error_msg = str(e).lower()
+            if 'being used' in error_msg or 'locked' in error_msg or 'access denied' in error_msg:
+                logger.info(f"⛔ XLS 파일 접근 불가 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"XLS 추출 오류 [{file_path}]: {e}")
+            
             try:
                 excel.Quit()
             except:
@@ -1675,14 +1941,32 @@ class FileIndexer:
             except:
                 pass
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_pdf(self, file_path: str) -> Optional[str]:
         """
         PDF에서 텍스트 추출
         PyMuPDF (fitz) 사용 - 속도가 월등히 빠름
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
         """
+        temp_file = None
+        
         try:
-            doc = fitz.open(file_path)
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ PDF 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일에서 텍스트 추출
+            doc = fitz.open(temp_file)
             text_parts = []
             
             # 최대 100페이지까지만
@@ -1691,10 +1975,19 @@ class FileIndexer:
                 text_parts.append(page.get_text())
             
             doc.close()
+            
+            logger.debug(f"✅ PDF 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
+            
             return '\n'.join(text_parts)[:100000]
+            
         except Exception as e:
             logger.debug(f"PDF 추출 오류 [{file_path}]: {e}")
             return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
     
     def _extract_hwp(self, file_path: str) -> Optional[str]:
         """

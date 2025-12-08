@@ -14,9 +14,10 @@
   },
   "indexing": {
     "enableActivityMonitor": true,
-    "idleThreshold": 3.0,
+    "idleThreshold": 2.0,
     "maxFileSize": 104857600,
     "parseTimeout": 60
   }
 }
+
 

@@ -1,7 +1,16 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, powerMonitor } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
+
+// UTF-8 인코딩 환경 변수 설정 (한글 처리)
+if (process.platform === 'win32') {
+  // Windows에서 콘솔 UTF-8 출력 강제
+  process.env.PYTHONIOENCODING = 'utf-8';
+  process.env.PYTHONUTF8 = '1';
+  process.env.LANG = 'ko_KR.UTF-8';
+  process.env.LC_ALL = 'ko_KR.UTF-8';
+}
 
 // 개발 모드 감지
 const isDev = !app.isPackaged;
@@ -70,11 +79,16 @@ function createWindow() {
   // 개발 모드면 Vite 서버 주소로, 프로덕션이면 빌드된 파일로
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
-    // 개발자 도구 자동 열기 (필요시 주석 해제)
-    // mainWindow.webContents.openDevTools();
+    // 개발자 도구 자동 열기
+    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+  
+  // 로드 에러 핸들링
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('페이지 로드 실패:', errorCode, errorDescription);
+  });
 
   // 윈도우가 닫힐 때
   mainWindow.on('closed', () => {
@@ -165,6 +179,100 @@ function startPythonBackend() {
   }
 }
 
+// 인덱싱 상태 저장 변수
+let indexingStateBeforeSleep = null;
+
+// Windows 절전 모드 감지 및 인덱싱 재개
+function setupPowerMonitoring() {
+  console.log('========================================');
+  console.log('🔋 절전 모드 모니터링 시작');
+  console.log('========================================');
+  
+  // 절전 모드 진입 (Suspend/Sleep/Dormant)
+  powerMonitor.on('suspend', async () => {
+    console.log('💤 시스템이 절전 모드로 진입합니다...');
+    
+    try {
+      // 현재 인덱싱 상태 확인
+      const response = await fetch('http://127.0.0.1:5000/api/indexing/status');
+      const status = await response.json();
+      
+      if (status.is_running) {
+        console.log('📌 인덱싱 진행 중 - 상태 저장');
+        indexingStateBeforeSleep = {
+          was_running: true,
+          paths: status.target_paths || [],
+          timestamp: new Date().toISOString()
+        };
+      } else {
+        indexingStateBeforeSleep = null;
+      }
+    } catch (error) {
+      console.error('❌ 절전 모드 진입 시 상태 저장 실패:', error);
+      indexingStateBeforeSleep = null;
+    }
+  });
+  
+  // 절전 모드 복귀 (Resume)
+  powerMonitor.on('resume', async () => {
+    console.log('⚡ 시스템이 절전 모드에서 복귀했습니다');
+    
+    // 약간의 지연 후 상태 확인 (시스템이 완전히 복귀할 시간 제공)
+    setTimeout(async () => {
+      if (indexingStateBeforeSleep && indexingStateBeforeSleep.was_running) {
+        console.log('🔄 인덱싱 재개 중...');
+        console.log('  - 중단 시각:', indexingStateBeforeSleep.timestamp);
+        console.log('  - 인덱싱 경로:', indexingStateBeforeSleep.paths.join(', '));
+        
+        try {
+          // 인덱싱 재개
+          const response = await fetch('http://127.0.0.1:5000/api/indexing/start', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              paths: indexingStateBeforeSleep.paths
+            })
+          });
+          
+          if (response.ok) {
+            console.log('✅ 인덱싱 재개 성공');
+            // 윈도우에 알림 전송
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('indexing-resumed', {
+                message: '절전 모드에서 복귀하여 인덱싱을 재개합니다',
+                paths: indexingStateBeforeSleep.paths
+              });
+            }
+          } else {
+            console.error('❌ 인덱싱 재개 실패:', response.statusText);
+          }
+        } catch (error) {
+          console.error('❌ 인덱싱 재개 중 오류:', error);
+        } finally {
+          // 상태 초기화
+          indexingStateBeforeSleep = null;
+        }
+      } else {
+        console.log('ℹ️ 복귀 전 인덱싱이 실행 중이 아니었습니다');
+      }
+    }, 3000); // 3초 대기
+  });
+  
+  // 화면 잠금
+  powerMonitor.on('lock-screen', () => {
+    console.log('🔒 화면이 잠겼습니다');
+  });
+  
+  // 화면 잠금 해제
+  powerMonitor.on('unlock-screen', () => {
+    console.log('🔓 화면 잠금이 해제되었습니다');
+  });
+  
+  console.log('✓ 절전 모드 모니터링 활성화 완료');
+}
+
 // 앱이 준비되면 윈도우 생성
 app.whenReady().then(() => {
   // 설정에 따라 Python 백엔드 자동 시작
@@ -180,6 +288,9 @@ app.whenReady().then(() => {
   }
   
   createWindow();
+
+  // Windows 절전 모드 감지 및 인덱싱 재개
+  setupPowerMonitoring();
 
   app.on('activate', () => {
     // macOS에서 독 아이콘 클릭 시 윈도우 재생성

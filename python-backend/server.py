@@ -12,6 +12,7 @@ import sys
 import os
 import atexit
 import io
+import json
 
 # ========================================
 # UTF-8 전역 설정 (최우선 실행)
@@ -104,12 +105,25 @@ def initialize():
     logger.info(f"Python 버전: {sys.version}")
     logger.info(f"작업 디렉토리: {os.getcwd()}")
     
-    # 환경 변수에서 설정 읽기 (config.json에서 전달된 값)
-    enable_activity_monitor = os.getenv('ENABLE_ACTIVITY_MONITOR', 'true').lower() == 'true'
+    # config.json 읽기 (환경 변수가 없을 때)
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except Exception as e:
+            logger.warning(f"config.json 읽기 실패: {e}")
+    
+    # 환경 변수에서 설정 읽기 (config.json에서 전달된 값, 없으면 config.json에서 직접 읽기)
+    enable_activity_monitor = os.getenv('ENABLE_ACTIVITY_MONITOR', 
+                                       str(config.get('indexing', {}).get('enableActivityMonitor', True))).lower() == 'true'
     logger.info(f"  - 사용자 활동 모니터링: {enable_activity_monitor}")
     
+    idle_threshold = 2.0
     if enable_activity_monitor:
-        idle_threshold = float(os.getenv('IDLE_THRESHOLD', '3.0'))
+        idle_threshold = float(os.getenv('IDLE_THRESHOLD', 
+                                        str(config.get('indexing', {}).get('idleThreshold', 2.0))))
         logger.info(f"  - 유휴 대기 시간: {idle_threshold}초")
     
     logger.info("========================================")
