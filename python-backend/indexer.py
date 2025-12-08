@@ -633,10 +633,63 @@ class FileIndexer:
             self.status_callback(status)
     
     def stop_indexing(self):
-        """인덱싱 중지"""
-        if self.is_running:
-            logger.info("인덱싱 중지 요청...")
-            self.stop_flag.set()
+        """인덱싱 중지 - 2중 체크로 확실하게 중단"""
+        if not self.is_running:
+            logger.info("인덱싱이 실행 중이 아닙니다.")
+            return
+        
+        logger.info("========================================")
+        logger.info("인덱싱 중지 요청 - 1차 시도")
+        logger.info("========================================")
+        
+        # 1차: stop_flag 설정
+        self.stop_flag.set()
+        
+        # 재시도 워커도 함께 중지
+        if self.retry_thread and self.retry_thread.is_alive():
+            logger.info("재시도 워커 중지 시도...")
+            self.retry_stop_flag.set()
+        
+        # 워커 스레드가 종료될 때까지 대기 (최대 10초)
+        if self.current_thread and self.current_thread.is_alive():
+            logger.info("워커 스레드 종료 대기 중...")
+            self.current_thread.join(timeout=10)
+            
+            # 1차 종료 확인
+            if self.current_thread.is_alive():
+                logger.warning("⚠ 1차 중지 실패 - 워커 스레드가 아직 실행 중")
+                logger.info("========================================")
+                logger.info("인덱싱 중지 요청 - 2차 시도 (강제)")
+                logger.info("========================================")
+                
+                # 2차: 강제 종료 시도 - stop_flag 재설정
+                self.stop_flag.set()
+                self.is_running = False  # 강제로 상태 변경
+                
+                # 추가 대기 (5초)
+                self.current_thread.join(timeout=5)
+                
+                # 2차 종료 확인
+                if self.current_thread.is_alive():
+                    logger.error("❌ 2차 중지 실패 - 워커 스레드 강제 종료 불가")
+                    logger.error("❌ 시스템 재시작이 필요할 수 있습니다")
+                else:
+                    logger.info("✓ 2차 시도로 인덱싱 중지 완료")
+            else:
+                logger.info("✓ 1차 시도로 인덱싱 중지 완료")
+        
+        # 재시도 워커 종료 확인
+        if self.retry_thread and self.retry_thread.is_alive():
+            self.retry_thread.join(timeout=2)
+            if self.retry_thread.is_alive():
+                logger.warning("⚠ 재시도 워커 중지 실패")
+            else:
+                logger.info("✓ 재시도 워커 중지 완료")
+        
+        # 최종 상태 확인
+        logger.info("========================================")
+        logger.info(f"최종 상태: is_running={self.is_running}, 워커 살아있음={self.current_thread.is_alive() if self.current_thread else False}")
+        logger.info("========================================")
     
     def stop_retry_worker(self):
         """재시도 워커 중지"""
@@ -647,30 +700,73 @@ class FileIndexer:
             logger.info("재시도 워커 중지됨")
     
     def cleanup(self):
-        """인덱서 리소스 정리 및 Lock 해제"""
-        logger.info("인덱서 리소스 정리 시작...")
+        """인덱서 리소스 정리 및 Lock 해제 - 강화된 종료 보장"""
+        logger.info("========================================")
+        logger.info("인덱서 리소스 정리 시작 (강화 모드)")
+        logger.info("========================================")
         
         try:
-            # 1. 인덱싱 중지
-            if self.is_running:
-                self.stop_indexing()
+            # 1단계: stop_flag 설정
+            self.stop_flag.set()
+            self.retry_stop_flag.set()
+            logger.info("1단계: 모든 stop_flag 설정 완료")
+            
+            # 2단계: 재시도 워커 강제 종료 (우선 처리)
+            if self.retry_thread and self.retry_thread.is_alive():
+                logger.info("2단계: 재시도 워커 종료 시도...")
+                self.retry_stop_flag.set()
+                self.retry_thread.join(timeout=3)
+                
+                if self.retry_thread.is_alive():
+                    logger.warning("⚠ 재시도 워커 3초 내 종료 실패 - 강제 종료")
+                    # 추가 대기
+                    self.retry_thread.join(timeout=2)
+                else:
+                    logger.info("✓ 재시도 워커 종료 완료")
+            
+            # 3단계: 메인 인덱싱 스레드 종료 (다중 시도)
+            if self.is_running or (self.current_thread and self.current_thread.is_alive()):
+                logger.info("3단계: 메인 인덱싱 스레드 종료 시도...")
+                
+                # 1차 시도: 정상 종료 (10초 대기)
+                self.is_running = False  # 상태 플래그 강제 변경
                 if self.current_thread and self.current_thread.is_alive():
+                    logger.info("  - 1차 시도: 정상 종료 대기 (10초)...")
+                    self.current_thread.join(timeout=10)
+                
+                # 2차 시도: 추가 대기 (5초)
+                if self.current_thread and self.current_thread.is_alive():
+                    logger.warning("  - 1차 시도 실패, 2차 시도 (5초)...")
                     self.current_thread.join(timeout=5)
+                
+                # 최종 확인
+                if self.current_thread and self.current_thread.is_alive():
+                    logger.error("  ⚠ 메인 인덱싱 스레드 종료 실패 (15초 초과)")
+                else:
+                    logger.info("  ✓ 메인 인덱싱 스레드 종료 완료")
             
-            # 2. 재시도 워커 중지
-            self.stop_retry_worker()
-            
-            # 3. 메모리 정리
+            # 4단계: 메모리 정리
+            logger.info("4단계: 메모리 정리...")
             with self.skipped_files_lock:
                 self.skipped_files.clear()
             
             with self.indexing_logs_lock:
                 self.indexing_logs.clear()
             
-            logger.info("✓ 인덱서 리소스 정리 완료")
+            # 5단계: 최종 상태 확인
+            main_alive = self.current_thread.is_alive() if self.current_thread else False
+            retry_alive = self.retry_thread.is_alive() if self.retry_thread else False
+            
+            logger.info("========================================")
+            logger.info("인덱서 리소스 정리 완료")
+            logger.info(f"  - is_running: {self.is_running}")
+            logger.info(f"  - 메인 스레드 살아있음: {main_alive}")
+            logger.info(f"  - 재시도 워커 살아있음: {retry_alive}")
+            logger.info("========================================")
             
         except Exception as e:
-            logger.error(f"인덱서 정리 중 오류: {e}")
+            logger.error(f"❌ 인덱서 정리 중 오류: {e}")
+            logger.error(traceback.format_exc())
     
     def _indexing_worker(self, root_paths: List[str]):
         """인덱싱 워커 (백그라운드 쓰레드) - 증분 색인"""
@@ -742,11 +838,12 @@ class FileIndexer:
                     self.start_retry_worker()
     
     def _process_files_incremental(self, all_files: List[str]):
-        """증분 파일 처리 (New/Modified만)"""
-        batch_size = 20  # 20개 파일마다 DB Commit
+        """증분 파일 처리 (New/Modified만) - 리소스 사용 최소화"""
+        batch_size = 5  # 5개 파일마다 DB Commit (리소스 절약)
         batch = []
         last_progress_time = time.time()
         stall_warning_threshold = 120  # 2분 동안 진행 없으면 경고
+        file_delay = 0.1  # 파일 처리 간 0.1초 지연 (CPU 부하 감소)
         
         for i, file_path in enumerate(all_files):
             if self.stop_flag.is_set():
@@ -851,6 +948,8 @@ class FileIndexer:
                                 self._log_success(saved_path, len(saved_content), saved_token_count, db_saved=True, content=saved_content)
                             batch = []
                             last_progress_time = time.time()  # 진행 시간 업데이트
+                            # 배치 저장 후 지연 (IO 부하 감소)
+                            time.sleep(0.5)
                         except Exception as e:
                             logger.error(f"DB 배치 저장 오류: {e}")
                             if self.log_callback:
@@ -858,6 +957,9 @@ class FileIndexer:
                             batch = []
                 else:
                     self.stats['skipped_files'] += 1
+                
+                # 파일 처리 간 지연 (CPU/IO 부하 감소)
+                time.sleep(file_delay)
             
             except PermissionError as e:
                 # 파일 잠금

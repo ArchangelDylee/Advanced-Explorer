@@ -96,8 +96,10 @@ function startPythonBackend() {
 
 // 앱이 준비되면 윈도우 생성
 app.whenReady().then(() => {
-  // Python 백엔드 시작
-  startPythonBackend();
+  // 개발 모드에서는 외부에서 Python을 실행하므로 자동 시작 비활성화
+  if (!isDev) {
+    startPythonBackend();
+  }
   
   createWindow();
 
@@ -116,76 +118,120 @@ app.on('window-all-closed', () => {
   }
 });
 
-// 앱 종료 전 Python 프로세스 안전하게 종료
-app.on('before-quit', async (event) => {
-  if (pythonProcess) {
-    console.log('Python 백엔드 안전 종료 시작...');
+// Python 프로세스 종료 함수 (재사용 가능)
+async function terminatePythonProcess() {
+  if (!pythonProcess) {
+    return true; // 이미 종료됨
+  }
+
+  console.log('Python 백엔드 안전 종료 시작...');
+  
+  try {
+    // 1. 백엔드 shutdown API 호출 (쓰레드 안전 종료)
+    const http = require('http');
     
-    // 앱 종료를 일시 중단하고 백엔드를 안전하게 종료
-    event.preventDefault();
-    
-    try {
-      // 1. 백엔드 shutdown API 호출 (쓰레드 안전 종료)
-      const http = require('http');
+    await new Promise((resolve, reject) => {
+      const shutdownTimeout = setTimeout(() => {
+        console.warn('백엔드 종료 API 타임아웃 (5초)');
+        reject(new Error('Shutdown API timeout'));
+      }, 5000); // 5초 타임아웃
       
-      await new Promise((resolve, reject) => {
-        const shutdownTimeout = setTimeout(() => {
-          console.warn('백엔드 종료 API 타임아웃 (5초)');
-          reject(new Error('Shutdown API timeout'));
-        }, 5000); // 5초 타임아웃
-        
-        const options = {
-          hostname: '127.0.0.1',
-          port: 5000,
-          path: '/api/shutdown',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        };
-        
-        const req = http.request(options, (res) => {
-          console.log(`백엔드 shutdown API 응답: ${res.statusCode}`);
-          clearTimeout(shutdownTimeout);
-          resolve();
-        });
-        
-        req.on('error', (error) => {
-          console.error('백엔드 shutdown API 호출 오류:', error.message);
-          clearTimeout(shutdownTimeout);
-          reject(error);
-        });
-        
-        req.end();
+      const options = {
+        hostname: '127.0.0.1',
+        port: 5000,
+        path: '/api/shutdown',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      };
+      
+      const req = http.request(options, (res) => {
+        console.log(`백엔드 shutdown API 응답: ${res.statusCode}`);
+        clearTimeout(shutdownTimeout);
+        resolve();
       });
       
-      console.log('✓ 백엔드 안전 종료 완료');
+      req.on('error', (error) => {
+        console.error('백엔드 shutdown API 호출 오류:', error.message);
+        clearTimeout(shutdownTimeout);
+        reject(error);
+      });
       
-    } catch (error) {
-      console.warn('백엔드 안전 종료 실패, 강제 종료 시도:', error.message);
-    }
+      req.end();
+    });
     
-    // 2. Python 프로세스 강제 종료 (안전 종료 실패 시 대비)
-    if (pythonProcess && !pythonProcess.killed) {
-      console.log('Python 프로세스 강제 종료...');
-      pythonProcess.kill('SIGTERM'); // 정상 종료 시그널
-      
-      // 1초 후에도 종료되지 않으면 SIGKILL
+    console.log('✓ 백엔드 안전 종료 완료');
+    
+  } catch (error) {
+    console.warn('백엔드 안전 종료 실패, 강제 종료 시도:', error.message);
+  }
+  
+  // 2. Python 프로세스 강제 종료 (안전 종료 실패 시 대비)
+  if (pythonProcess && !pythonProcess.killed) {
+    console.log('Python 프로세스 강제 종료...');
+    pythonProcess.kill('SIGTERM'); // 정상 종료 시그널
+    
+    // 1초 후에도 종료되지 않으면 SIGKILL
+    await new Promise(resolve => {
       setTimeout(() => {
         if (pythonProcess && !pythonProcess.killed) {
           console.warn('Python 프로세스 SIGKILL로 강제 종료');
           pythonProcess.kill('SIGKILL');
         }
+        resolve();
       }, 1000);
+    });
+  }
+  
+  pythonProcess = null;
+  console.log('✓ Python 프로세스 종료 완료');
+  return true;
+}
+
+// 앱 종료 전 Python 프로세스 안전하게 종료
+let isQuitting = false; // 중복 종료 방지 플래그
+
+app.on('before-quit', async (event) => {
+  if (isQuitting) {
+    return; // 이미 종료 진행 중
+  }
+  
+  if (pythonProcess) {
+    // 앱 종료를 일시 중단하고 백엔드를 안전하게 종료
+    event.preventDefault();
+    isQuitting = true;
+    
+    try {
+      await terminatePythonProcess();
+    } catch (error) {
+      console.error('Python 프로세스 종료 오류:', error);
     }
     
-    pythonProcess = null;
-    
-    // 3. 앱 종료 재개
+    // 앱 종료 재개
     setTimeout(() => {
       console.log('앱 종료');
       app.quit();
     }, 1500); // 1.5초 대기 후 앱 종료
+  }
+});
+
+// will-quit 이벤트 추가 (추가 안전장치)
+app.on('will-quit', async (event) => {
+  if (pythonProcess && !isQuitting) {
+    console.log('will-quit: 백그라운드 프로세스 확인...');
+    event.preventDefault();
+    isQuitting = true;
+    
+    try {
+      await terminatePythonProcess();
+    } catch (error) {
+      console.error('will-quit: Python 프로세스 종료 오류:', error);
+    }
+    
+    setTimeout(() => {
+      app.quit();
+    }, 1000);
   }
 });
 
