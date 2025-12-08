@@ -1569,19 +1569,12 @@ class FileIndexer:
                             retry_failed += 1
                     
                     else:
-                        # 여전히 실패
+                        # 여전히 실패 - 무제한 재시도 (요구사항: 사용자가 사용중이면 절대 프로그램을 닫지 않도록 함)
                         with self.skipped_files_lock:
                             if file_path in self.skipped_files:
                                 self.skipped_files[file_path]['retry_count'] += 1
                                 retry_count = self.skipped_files[file_path]['retry_count']
-                                
-                                # 5회 재시도 실패 시 포기
-                                if retry_count >= 5:
-                                    reason = self.skipped_files[file_path]['reason']
-                                    del self.skipped_files[file_path]
-                                    logger.warning(f"재시도 5회 실패, 포기: {file_path} - {reason}")
-                                else:
-                                    logger.debug(f"재시도 실패 ({retry_count}/5): {file_path}")
+                                logger.debug(f"재시도 실패 (재시도 횟수: {retry_count}회): {file_path}")
                         
                         retry_failed += 1
                 
