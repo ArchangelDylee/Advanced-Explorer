@@ -1852,6 +1852,9 @@ class FileIndexer:
             
             # 모든 시트 순회
             for sheet_name in workbook.sheetnames:
+                # 시트 이름 추가 (검색 가능하도록)
+                text_parts.append(f"\n[시트: {sheet_name}]\n")
+                
                 sheet = workbook[sheet_name]
                 
                 # 모든 행 순회
@@ -1912,6 +1915,10 @@ class FileIndexer:
             
             # 모든 시트 순회
             for sheet in workbook.Sheets:
+                # 시트 이름 추가 (검색 가능하도록)
+                sheet_name = sheet.Name
+                text_parts.append(f"\n[시트: {sheet_name}]\n")
+                
                 used_range = sheet.UsedRange
                 for row in used_range.Rows:
                     for cell in row.Cells:
