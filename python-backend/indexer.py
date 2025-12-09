@@ -725,8 +725,17 @@ class FileIndexer:
             content: 인덱스된 텍스트 내용
         """
         filename = os.path.basename(path)
-        db_status = "✓ DB 저장 완료" if db_saved else "⊗ DB 저장 대기"
-        detail = f'{char_count:,}자 / {token_count:,}토큰 | {db_status}'
+        
+        # DB 저장 상태 표시 (더 명확하게)
+        if db_saved:
+            db_status = "✓ DB완료"
+            token_info = f"토큰:{token_count:,}개"
+        else:
+            db_status = "⊗ DB대기"
+            token_info = f"토큰:{token_count:,}개"
+        
+        # 상세 정보: 문자 수 / 토큰 수 | DB 상태
+        detail = f'{char_count:,}자 / {token_info} | {db_status}'
         
         # 통합 로그에 기록
         self._write_indexing_log('Success', path, detail)
@@ -1208,8 +1217,20 @@ class FileIndexer:
                 if indexed_mtime is not None:
                     # 파일이 이미 인덱싱됨
                     if abs(current_mtime - indexed_mtime) < 1.0:
-                        # 수정되지 않음 - 스킵
+                        # 수정되지 않음 - 이전 처리 완료 로그
                         self.stats['skipped_files'] += 1
+                        
+                        # 로그 출력
+                        filename = os.path.basename(file_path)
+                        detail = "이전 처리 완료 (변경 없음)"
+                        
+                        # 메모리에 로그 추가
+                        self._add_log_to_memory('이전완료', file_path, detail)
+                        
+                        # UI 콜백
+                        if self.log_callback:
+                            self.log_callback('이전완료', filename, detail)
+                        
                         continue
                     else:
                         # 수정됨 - 재인덱싱
