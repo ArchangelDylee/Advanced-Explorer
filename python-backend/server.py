@@ -93,11 +93,12 @@ CORS(app)  # CORS 허용
 db_manager: DatabaseManager = None
 indexer: FileIndexer = None
 search_engine: SearchEngine = None
+summarizer: ContentSummarizer = None
 
 
 def initialize():
     """백엔드 초기화 (설정 파일 기반)"""
-    global db_manager, indexer, search_engine
+    global db_manager, indexer, search_engine, summarizer
     
     logger.info("========================================")
     logger.info("Python 백엔드 초기화 (가상환경)")
