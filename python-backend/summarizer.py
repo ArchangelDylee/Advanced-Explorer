@@ -36,12 +36,14 @@ class ContentSummarizer:
                     'summary': None
                 }
             
-            # 언어 자동 감지 (한글/영어)
-            language = 'korean' if any('\uac00' <= c <= '\ud7a3' for c in text[:100]) else 'english'
+            # 언어 감지 (표시용)
+            has_korean = any('\uac00' <= c <= '\ud7a3' for c in text[:100])
+            language = 'korean' if has_korean else 'english'
             
-            # TextRank 요약
-            parser = PlaintextParser.from_string(text, Tokenizer(language))
-            stemmer = Stemmer(language)
+            # TextRank 요약 (모든 언어를 english 토크나이저로 처리)
+            # TextRank는 문장 간 유사도 기반이므로 언어에 관계없이 작동
+            parser = PlaintextParser.from_string(text, Tokenizer('english'))
+            stemmer = Stemmer('english')
             summarizer = TextRankSummarizer(stemmer)
             
             # 요약 문장 추출

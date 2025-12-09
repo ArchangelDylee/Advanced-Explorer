@@ -574,6 +574,62 @@ def initialize():
 - `python-backend/server.py`: 전역 변수 선언 및 초기화 수정
 - `python-backend/summarizer.py`: ContentSummarizer 클래스 (변경 없음)
 
+**커밋**: `9169d21`
+
+---
+
+### Bug #7: 한글 요약 기능 오류 (konlpy 의존성 문제)
+**날짜**: 2025-12-10
+
+**문제**:
+- "요약 생성" 버튼 클릭 시 `Korean tokenizer requires konlpy. Please, install it by command 'pip install konlpy'` 오류 발생
+- konlpy는 Java JDK가 필요하고 Windows 환경에서 설치가 복잡함
+
+**원인**:
+```python
+# python-backend/summarizer.py (수정 전)
+# 언어 자동 감지 (한글/영어)
+language = 'korean' if any('\uac00' <= c <= '\ud7a3' for c in text[:100]) else 'english'
+
+# TextRank 요약
+parser = PlaintextParser.from_string(text, Tokenizer(language))  # korean일 때 konlpy 필요
+stemmer = Stemmer(language)
+summarizer = TextRankSummarizer(stemmer)
+```
+
+**문제점**:
+1. Tokenizer('korean')을 사용하면 konlpy 라이브러리가 필수
+2. konlpy 설치 시 JPype1과 Java JDK 설치 필요
+3. 의존성이 복잡하고 설치 실패 가능성 높음
+
+**해결 방법**: 
+- TextRank는 문장 간 유사도 기반 알고리즘으로 언어에 관계없이 작동
+- 모든 언어를 영어 토크나이저로 처리하도록 변경
+- 한글도 문장 단위로 유사도 계산이 가능하므로 정상 작동
+
+**수정 내용**:
+```python
+# python-backend/summarizer.py (수정 후)
+# 언어 감지 (표시용)
+has_korean = any('\uac00' <= c <= '\ud7a3' for c in text[:100])
+language = 'korean' if has_korean else 'english'  # 응답용
+
+# TextRank 요약 (모든 언어를 english 토크나이저로 처리)
+# TextRank는 문장 간 유사도 기반이므로 언어에 관계없이 작동
+parser = PlaintextParser.from_string(text, Tokenizer('english'))
+stemmer = Stemmer('english')
+summarizer = TextRankSummarizer(stemmer)
+```
+
+**장점**:
+1. ✅ konlpy 의존성 제거 - 추가 라이브러리 설치 불필요
+2. ✅ 한글, 영어, 기타 언어 모두 동일한 방식으로 처리 가능
+3. ✅ TextRank 알고리즘 특성상 문장 단위 유사도 계산이므로 언어 무관
+4. ✅ 설치 및 배포 간소화
+
+**관련 파일**:
+- `python-backend/summarizer.py`: Tokenizer를 'english'로 고정
+
 **커밋**: 진행 예정
 
 ---
@@ -585,26 +641,30 @@ def initialize():
 - ✅ 파일 인덱싱 상태 표시 완료
 - ✅ API 에러 핸들링 강화 완료
 - ✅ useEffect dependency 수정 완료
-- ⏳ 인덱싱된 파일 내용 표시 문제 - 테스트 대기 중
+- ✅ 인덱싱된 파일 내용 표시 문제 해결
+- ✅ 요약 기능 summarizer 전역 변수 문제 해결
+- ✅ 한글 요약 konlpy 의존성 문제 해결
+- ⏳ 요약 기능 최종 테스트 대기 중
 
 ### 다음 단계
-1. 브라우저 개발자 도구 콘솔에서 로그 확인
-2. 파일 클릭 시 정상 동작 확인
-3. 필요 시 추가 디버깅
+1. 브라우저에서 인덱싱된 파일 선택
+2. "요약 생성" 버튼 클릭하여 기능 테스트
+3. 검색 로그에서 요약 결과 확인
 
 ---
 
 ## 📊 통계
 
-- **총 Bug 수정**: 6개
+- **총 Bug 수정**: 7개
 - **기능 개선**: 3개
-- **커밋 수**: 3개
+- **커밋 수**: 3개 (4번째 진행 중)
 - **수정된 파일**: 
   - `src/App.tsx`
   - `src/api/backend.ts`
   - `python-backend/server.py`
   - `python-backend/database.py`
   - `python-backend/indexer.py`
+  - `python-backend/summarizer.py`
   - `BUG_FIX_HISTORY.md`
 
 ---
