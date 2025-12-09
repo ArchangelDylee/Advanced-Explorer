@@ -246,7 +246,7 @@ class DatabaseManager:
         검색 타입:
         1. 단일 단어: "학교" → 학교를 포함
         2. 복합 단어: "학교 경찰" → 학교 AND 경찰 모두 포함
-        3. 따옴표 문장: '"학교 경찰"' → 정확히 "학교 경찰" 포함
+        3. 따옴표 문장: '"학교 경찰"' → 정확히 "학교 경찰" 포함 (특수문자 포함)
         
         Args:
             query: 검색 쿼리
@@ -256,7 +256,39 @@ class DatabaseManager:
             검색 결과 리스트 [{path, content, mtime, rank}, ...]
         """
         try:
-            # FTS5 검색어 변환
+            # 따옴표로 감싼 정확한 문장 검색이고 특수문자가 있는 경우 LIKE 검색 사용
+            is_exact_phrase = query.startswith('"') and query.endswith('"')
+            
+            if is_exact_phrase:
+                # 따옴표 제거
+                exact_phrase = query[1:-1]
+                
+                # 특수문자 포함 여부 확인
+                import re
+                has_special_chars = bool(re.search(r'[&@#$%^+=<>~`|\\\/]', exact_phrase))
+                
+                if has_special_chars:
+                    # LIKE 검색 사용 (특수문자 포함 정확한 검색)
+                    cursor = self.conn.execute("""
+                        SELECT path, content, mtime, 0 as rank
+                        FROM files_fts
+                        WHERE content LIKE ?
+                        LIMIT ?
+                    """, (f'%{exact_phrase}%', limit))
+                    
+                    results = []
+                    for row in cursor.fetchall():
+                        results.append({
+                            'path': row['path'],
+                            'content': row['content'][:500],  # 처음 500자만
+                            'mtime': row['mtime'],
+                            'rank': row['rank']
+                        })
+                    
+                    logger.info(f"LIKE 검색 완료 (특수문자 포함): '{exact_phrase}' - {len(results)}개 결과")
+                    return results
+            
+            # 일반 FTS5 검색
             fts_query = self._convert_to_fts5_query(query)
             
             cursor = self.conn.execute("""
@@ -276,7 +308,7 @@ class DatabaseManager:
                     'rank': row['rank']
                 })
             
-            logger.info(f"검색 완료: '{query}' (FTS: '{fts_query}') - {len(results)}개 결과")
+            logger.info(f"FTS5 검색 완료: '{query}' (FTS: '{fts_query}') - {len(results)}개 결과")
             return results
             
         except sqlite3.Error as e:
@@ -296,6 +328,7 @@ class DatabaseManager:
         import re
         
         # 1. 따옴표 문장 검색: "학교 경찰" → "학교 경찰" (FTS5 정확 일치)
+        # 특수문자가 포함된 경우는 search() 메서드에서 LIKE로 처리하므로 여기서는 FTS5용으로만 변환
         if query.startswith('"') and query.endswith('"'):
             # 이미 따옴표로 감싸져 있으면 그대로 사용
             return query

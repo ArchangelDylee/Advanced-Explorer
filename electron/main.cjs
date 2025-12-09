@@ -558,13 +558,28 @@ ipcMain.handle('read-directories-only', async (event, dirPath) => {
   try {
     const files = await fs.readdir(dirPath, { withFileTypes: true });
     // 폴더만 필터링하고 특수 문자로 시작하는 폴더 제외
-    return files
+    const directories = files
       .filter(file => file.isDirectory())
-      .filter(file => /^[a-zA-Z0-9가-힣]/.test(file.name))
-      .map(file => ({
-        name: file.name,
-        path: path.join(dirPath, file.name)
-      }));
+      .filter(file => /^[a-zA-Z0-9가-힣]/.test(file.name));
+    
+    // 접근 권한 체크
+    const accessibleDirs = [];
+    for (const file of directories) {
+      const fullPath = path.join(dirPath, file.name);
+      try {
+        // 읽기 권한 확인
+        await fs.access(fullPath, fs.constants.R_OK);
+        accessibleDirs.push({
+          name: file.name,
+          path: fullPath
+        });
+      } catch (accessError) {
+        // 접근 권한이 없으면 목록에 포함하지 않음
+        console.debug(`Access denied: ${fullPath}`);
+      }
+    }
+    
+    return accessibleDirs;
   } catch (error) {
     console.error('Error reading directories:', error);
     return [];
@@ -575,11 +590,26 @@ ipcMain.handle('read-directory', async (event, dirPath) => {
   const fs = require('fs').promises;
   try {
     const files = await fs.readdir(dirPath, { withFileTypes: true });
-    return files.map(file => ({
-      name: file.name,
-      isDirectory: file.isDirectory(),
-      path: path.join(dirPath, file.name)
-    }));
+    
+    // 접근 권한 체크
+    const accessibleFiles = [];
+    for (const file of files) {
+      const fullPath = path.join(dirPath, file.name);
+      try {
+        // 읽기 권한 확인
+        await fs.access(fullPath, fs.constants.R_OK);
+        accessibleFiles.push({
+          name: file.name,
+          isDirectory: file.isDirectory(),
+          path: fullPath
+        });
+      } catch (accessError) {
+        // 접근 권한이 없으면 목록에 포함하지 않음
+        console.debug(`Access denied: ${fullPath}`);
+      }
+    }
+    
+    return accessibleFiles;
   } catch (error) {
     console.error('Error reading directory:', error);
     return [];
@@ -589,6 +619,9 @@ ipcMain.handle('read-directory', async (event, dirPath) => {
 ipcMain.handle('get-file-stats', async (event, filePath) => {
   const fs = require('fs').promises;
   try {
+    // 먼저 접근 권한 확인
+    await fs.access(filePath, fs.constants.R_OK);
+    
     const stats = await fs.stat(filePath);
     return {
       size: stats.size,
@@ -597,7 +630,11 @@ ipcMain.handle('get-file-stats', async (event, filePath) => {
       isDirectory: stats.isDirectory()
     };
   } catch (error) {
-    console.error('Error getting file stats:', error);
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      console.debug(`Access denied: ${filePath}`);
+    } else {
+      console.error('Error getting file stats:', error);
+    }
     return null;
   }
 });
