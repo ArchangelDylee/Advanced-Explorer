@@ -28,4 +28,5 @@ pynput==1.7.6
 # 텍스트 요약 (TextRank)
 sumy==0.11.0
 nltk==3.8.1
+numpy==1.24.3            # sumy 의존성
 

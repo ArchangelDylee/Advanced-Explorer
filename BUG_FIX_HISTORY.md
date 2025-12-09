@@ -630,6 +630,54 @@ summarizer = TextRankSummarizer(stemmer)
 **관련 파일**:
 - `python-backend/summarizer.py`: Tokenizer를 'english'로 고정
 
+**커밋**: `c55d0a5`
+
+---
+
+### Bug #8: 요약 기능 numpy 의존성 누락
+**날짜**: 2025-12-10
+
+**문제**:
+- 요약 생성 버튼 클릭 시 `LexRank summarizer requires NumPy. Please, install it by command 'pip install numpy'` 오류 발생
+- sumy 라이브러리가 numpy를 의존성으로 요구하지만 requirements.txt에 명시되지 않음
+
+**원인**:
+```python
+# python-backend/requirements.txt (수정 전)
+# 텍스트 요약 (TextRank)
+sumy==0.11.0
+nltk==3.8.1
+# numpy 누락
+```
+
+**문제점**:
+- sumy 라이브러리는 내부적으로 numpy를 사용
+- requirements.txt에 numpy가 명시되지 않아 설치 시 누락됨
+- LexRank, TextRank 등 요약 알고리즘이 numpy 행렬 연산을 필요로 함
+
+**해결**:
+```python
+# python-backend/requirements.txt (수정 후)
+# 텍스트 요약 (TextRank)
+sumy==0.11.0
+nltk==3.8.1
+numpy==1.24.3            # sumy 의존성
+```
+
+**설치 명령**:
+```bash
+pip install numpy==1.24.3
+```
+
+**검증**:
+```
+✓ TextRank 요약 완료: 5028자 → 1335자
+POST /api/summarize HTTP/1.1 200
+```
+
+**관련 파일**:
+- `python-backend/requirements.txt`: numpy 의존성 추가
+
 **커밋**: 진행 예정
 
 ---
@@ -644,20 +692,24 @@ summarizer = TextRankSummarizer(stemmer)
 - ✅ 인덱싱된 파일 내용 표시 문제 해결
 - ✅ 요약 기능 summarizer 전역 변수 문제 해결
 - ✅ 한글 요약 konlpy 의존성 문제 해결
-- ⏳ 요약 기능 최종 테스트 대기 중
+- ✅ 요약 기능 numpy 의존성 문제 해결
+- ✅ 요약 기능 정상 작동 확인 (5028자 → 1335자)
 
-### 다음 단계
-1. 브라우저에서 인덱싱된 파일 선택
-2. "요약 생성" 버튼 클릭하여 기능 테스트
-3. 검색 로그에서 요약 결과 확인
+### 완료된 기능
+1. ✅ 파일 시스템 탐색 및 검색
+2. ✅ FTS5 기반 전체 텍스트 검색
+3. ✅ 파일 인덱싱 (PDF, DOCX, PPTX, XLSX 등)
+4. ✅ TextRank 기반 내용 요약
+5. ✅ 사용자 활동 감지 및 인덱싱 자동 일시정지
+6. ✅ DB 트랜잭션 관리 및 WAL 모드
 
 ---
 
 ## 📊 통계
 
-- **총 Bug 수정**: 7개
+- **총 Bug 수정**: 8개
 - **기능 개선**: 3개
-- **커밋 수**: 3개 (4번째 진행 중)
+- **커밋 수**: 4개 (5번째 진행 중)
 - **수정된 파일**: 
   - `src/App.tsx`
   - `src/api/backend.ts`
@@ -665,6 +717,7 @@ summarizer = TextRankSummarizer(stemmer)
   - `python-backend/database.py`
   - `python-backend/indexer.py`
   - `python-backend/summarizer.py`
+  - `python-backend/requirements.txt`
   - `BUG_FIX_HISTORY.md`
 
 ---
