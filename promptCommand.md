@@ -546,6 +546,30 @@ function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T) => voi
 - 탭, 경로, 선택 파일 등 유지
 ```
 
+### 7-8. 즐겨찾기/폴더 트리 높이 조절
+```
+즐겨찾기와 폴더 트리 사이의 높이를 조절할 수 있도록 구현해줘:
+
+구현:
+1. layoutState에 favoritesHeight 추가 (기본값: 180px)
+2. Tree Area를 flex flex-col로 변경
+3. 즐겨찾기 섹션:
+   - style={{ height: layout.favoritesHeight }}
+   - overflow-y-auto로 스크롤 지원
+4. Resizer 추가:
+   - 즐겨찾기와 폴더 트리 사이에 vertical Resizer
+   - onResize로 favoritesHeight 조정
+   - 최소 높이: 50px
+5. 폴더 트리:
+   - flex-1로 나머지 공간 차지
+   - overflow-y-auto로 스크롤 지원
+
+사용자 경험:
+- 마우스로 경계선 드래그하여 높이 조절
+- localStorage에 저장되어 세션 유지
+- 양쪽 모두 독립적인 스크롤
+```
+
 ---
 
 ## 8. Electron 통합
@@ -764,24 +788,26 @@ body {
 
 다음 기능이 모두 정상 작동하면 완성:
 
-- [ ] 파일 시스템 탐색
-- [ ] 즐겨찾기 및 폴더 트리
-- [ ] 멀티 탭
-- [ ] 파일 검색 (파일명 + 내용)
-- [ ] 파일 인덱싱 (PDF, DOCX, PPTX, XLSX 등)
-- [ ] TextRank 요약
-- [ ] 사용자 활동 감지
-- [ ] 인덱싱 상태 표시
-- [ ] 검색 로그 및 인덱싱 로그
-- [ ] 컨텍스트 메뉴
-- [ ] 정렬 및 필터
-- [ ] localStorage 세션 유지
-- [ ] Electron 통합
-- [ ] 초기 디렉토리: 문서 폴더
+- [x] 파일 시스템 탐색
+- [x] 즐겨찾기 및 폴더 트리
+- [x] 멀티 탭
+- [x] 파일 검색 (파일명 + 내용)
+- [x] 파일 인덱싱 (PDF, DOCX, PPTX, XLSX 등)
+- [x] TextRank 요약
+- [x] 사용자 활동 감지
+- [x] 인덱싱 상태 표시
+- [x] 검색 로그 및 인덱싱 로그
+- [x] 컨텍스트 메뉴
+- [x] 정렬 및 필터
+- [x] localStorage 세션 유지
+- [x] Electron 통합
+- [x] 초기 디렉토리: 문서 폴더
+- [x] 즐겨찾기/폴더 트리 높이 조절
 
 ---
 
 **작성일**: 2025-12-10  
-**버전**: 1.0.0  
+**최종 수정**: 2025-12-10  
+**버전**: 1.1.0  
 **프로젝트**: Advanced Explorer
 

@@ -707,6 +707,62 @@ useEffect(() => {
 
 ---
 
+### Feature #6: 즐겨찾기/폴더 트리 높이 조절
+
+**사용자 명령**:
+```
+즐겨 찾기랑 폴더 트리 간 상하 높이 조정이 안돼... 조정될 수 있도록 바꿔줘
+```
+
+**해결 명령**:
+```
+src/App.tsx의 Tree Area를 다음과 같이 수정해줘:
+
+1. layoutState에 favoritesHeight 추가 (기본값: 180px)
+2. Tree Area를 flex flex-col로 변경
+3. 즐겨찾기 섹션에 고정 높이 적용
+4. 즐겨찾기와 폴더 트리 사이에 Resizer 추가
+5. 폴더 트리는 flex-1로 나머지 공간 차지
+```
+
+**수정 코드**:
+```typescript
+// src/App.tsx - 즐겨찾기/폴더 트리 높이 조절
+
+{/* Tree Area */}
+<div className="flex-1 flex flex-col">
+  {/* Favorites */}
+  <div style={{ height: layout.favoritesHeight }} className="flex flex-col border-b border-[#444]">
+    <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
+      <Star size={12} className="mr-1.5 text-[#A855F7]" fill="#A855F7"/> 즐겨찾기
+    </div>
+    <div className="flex-1 overflow-y-auto">
+      {FAVORITES.filter(fav => /^[a-zA-Z0-9가-힣]/.test(fav.name)).map((fav, i) => (
+        <TreeItem key={i} label={fav.name} IconComponent={fav.icon} isSelected={activeTab.selectedFolder === fav.name} onClick={() => navigate(fav.name, fav.path)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: fav.name, path: fav.path, type: 'folder' } }); }} />
+      ))}
+    </div>
+  </div>
+  
+  <Resizer direction="vertical" onResize={(d) => setLayout(p => ({ ...p, favoritesHeight: Math.max(50, p.favoritesHeight + d) }))} />
+  
+  {/* Folder Tree */}
+  <div className="flex-1 flex flex-col">
+    <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
+      <Folder size={12} className="mr-1.5 text-[#FBBF24]" fill="#FBBF24"/> 폴더 트리
+    </div>
+    <div className="flex-1 overflow-y-auto">{renderTree(folderStructure)}</div>
+  </div>
+</div>
+```
+
+**기능**:
+- ✅ 즐겨찾기와 폴더 트리 사이의 경계선을 마우스로 드래그
+- ✅ 높이 조절 가능 (최소 50px)
+- ✅ localStorage에 자동 저장되어 세션 유지
+- ✅ 각 섹션이 독립적으로 스크롤
+
+---
+
 ## 6. 프로세스 관리
 
 ### 프로세스 종료 및 재시작
@@ -967,10 +1023,12 @@ SELECT path, mtime FROM files_fts ORDER BY mtime DESC LIMIT 10;
 | #3 | 이전 처리 완료 구분 | "이전완료" 상태 추가 |
 | #4 | 요약 결과 줄바꿈 | \n\n, line-height: 1.8 |
 | #5 | 초기 디렉토리 설정 | 문서 폴더로 시작 |
+| #6 | 즐겨찾기/폴더 트리 높이 조절 | Resizer + flex layout |
 
 ---
 
 **작성일**: 2025-12-10  
-**버전**: 1.0.0  
+**최종 수정**: 2025-12-10  
+**버전**: 1.1.0  
 **프로젝트**: Advanced Explorer
 
