@@ -1135,7 +1135,7 @@ class FileIndexer:
     
     def _process_files_incremental(self, all_files: List[str]):
         """증분 파일 처리 (New/Modified만) - 리소스 사용 최소화"""
-        batch_size = 2  # 2개 파일마다 DB Commit (리소스 절약)
+        batch_size = 2  # 2개 파일마다 DB Commit (즉시 저장)
         batch = []
         last_progress_time = time.time()
         stall_warning_threshold = 120  # 2분 동안 진행 없으면 경고

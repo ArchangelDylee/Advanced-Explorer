@@ -82,6 +82,15 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             
+            # 트랜잭션 격리 수준 설정 (DEFERRED: 읽기는 즉시, 쓰기는 필요 시 락)
+            self.conn.isolation_level = "DEFERRED"
+            
+            # WAL 모드 활성화 (Write-Ahead Logging: 읽기/쓰기 동시 처리)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            
+            # 동기화 모드 설정 (NORMAL: 빠르면서도 안전)
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+            
             # FTS5 가상 테이블 생성 (unicode61 토크나이저 사용 - 한글 지원)
             # path: 파일 절대 경로 (검색 제외)
             # content: 파일 텍스트 내용 (검색 대상)
@@ -123,7 +132,7 @@ class DatabaseManager:
     
     def insert_file(self, path: str, content: str, mtime: float):
         """
-        파일 인덱스 추가
+        파일 인덱스 추가 (트랜잭션 보장)
         
         Args:
             path: 파일 절대 경로
@@ -131,24 +140,35 @@ class DatabaseManager:
             mtime: 마지막 수정 시간 (UNIX timestamp)
         """
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             self.conn.execute(
                 "INSERT INTO files_fts (path, content, mtime) VALUES (?, ?, ?)",
                 (path, content, str(mtime))
             )
             self.conn.commit()
-            logger.debug(f"파일 인덱스 추가: {path}")
+            logger.debug(f"✓ 파일 인덱스 추가 (커밋됨): {path}")
         except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except:
+                pass
             logger.error(f"파일 인덱스 추가 오류 [{path}]: {e}")
             raise
     
     def insert_files_batch(self, files: List[Tuple[str, str, float]]):
         """
-        파일 인덱스 배치 추가 (성능 최적화)
+        파일 인덱스 배치 추가 (성능 최적화 + 트랜잭션 보장)
         
         Args:
             files: [(path, content, mtime), ...] 형태의 리스트
         """
+        if not files:
+            return
+            
         try:
+            # 명시적 트랜잭션 시작
+            self.conn.execute("BEGIN TRANSACTION")
+            
             # 배치 삽입을 위한 데이터 변환
             data = [(path, content, str(mtime)) for path, content, mtime in files]
             
@@ -156,15 +176,23 @@ class DatabaseManager:
                 "INSERT INTO files_fts (path, content, mtime) VALUES (?, ?, ?)",
                 data
             )
+            
+            # 명시적 커밋
             self.conn.commit()
-            logger.info(f"배치 인덱스 추가 완료: {len(files)}개 파일")
+            logger.info(f"✓ 배치 인덱스 추가 완료 (커밋됨): {len(files)}개 파일")
+            
         except sqlite3.Error as e:
-            logger.error(f"배치 인덱스 추가 오류: {e}")
+            # 롤백 처리
+            try:
+                self.conn.rollback()
+                logger.error(f"배치 인덱스 추가 실패 - 롤백됨: {e}")
+            except:
+                logger.error(f"롤백 실패: {e}")
             raise
     
     def update_file(self, path: str, content: str, mtime: float):
         """
-        파일 인덱스 업데이트
+        파일 인덱스 업데이트 (트랜잭션 보장)
         
         Args:
             path: 파일 절대 경로
@@ -172,6 +200,7 @@ class DatabaseManager:
             mtime: 마지막 수정 시간 (UNIX timestamp)
         """
         try:
+            self.conn.execute("BEGIN TRANSACTION")
             # FTS5는 UPDATE를 지원하므로 직접 업데이트
             cursor = self.conn.execute(
                 "UPDATE files_fts SET content = ?, mtime = ? WHERE path = ?",
@@ -179,12 +208,19 @@ class DatabaseManager:
             )
             
             if cursor.rowcount == 0:
-                # 업데이트할 행이 없으면 새로 삽입
-                self.insert_file(path, content, mtime)
-            else:
-                self.conn.commit()
-                logger.debug(f"파일 인덱스 업데이트: {path}")
+                # 업데이트할 행이 없으면 새로 삽입 (이미 트랜잭션 안)
+                self.conn.execute(
+                    "INSERT INTO files_fts (path, content, mtime) VALUES (?, ?, ?)",
+                    (path, content, str(mtime))
+                )
+            
+            self.conn.commit()
+            logger.debug(f"✓ 파일 인덱스 업데이트 (커밋됨): {path}")
         except sqlite3.Error as e:
+            try:
+                self.conn.rollback()
+            except:
+                pass
             logger.error(f"파일 인덱스 업데이트 오류 [{path}]: {e}")
             raise
     
