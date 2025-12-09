@@ -363,6 +363,44 @@ class DatabaseManager:
             logger.error(f"파일 개수 조회 오류: {e}")
             return 0
     
+    def is_file_indexed(self, path: str) -> bool:
+        """
+        파일이 인덱싱되었는지 확인
+        
+        Args:
+            path: 파일 절대 경로
+        
+        Returns:
+            인덱싱 여부 (True/False)
+        """
+        try:
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) as count FROM files_fts WHERE path = ?",
+                (path,)
+            )
+            count = cursor.fetchone()['count']
+            return count > 0
+        except sqlite3.Error as e:
+            logger.error(f"파일 인덱싱 여부 확인 오류 [{path}]: {e}")
+            return False
+    
+    def get_all_indexed_paths(self, limit: int = 10000) -> List[str]:
+        """
+        인덱스된 모든 파일 경로 조회 (디버깅용)
+        
+        Args:
+            limit: 조회할 최대 개수
+        
+        Returns:
+            파일 경로 리스트
+        """
+        try:
+            cursor = self.conn.execute(f"SELECT path FROM files_fts LIMIT {limit}")
+            return [row['path'] for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"파일 경로 조회 오류: {e}")
+            return []
+    
     def clear_index(self):
         """모든 인덱스 삭제"""
         try:
@@ -460,6 +498,8 @@ class DatabaseManager:
             파일 상세 정보 또는 None
         """
         try:
+            logger.debug(f"DB 쿼리: SELECT * FROM files_fts WHERE path = '{path}'")
+            
             cursor = self.conn.execute(
                 "SELECT path, content, mtime FROM files_fts WHERE path = ?",
                 (path,)
@@ -467,6 +507,7 @@ class DatabaseManager:
             row = cursor.fetchone()
             
             if row:
+                logger.debug(f"✓ DB에서 파일 발견: {path}")
                 return {
                     'path': row['path'],
                     'content': row['content'],
@@ -474,6 +515,17 @@ class DatabaseManager:
                     'mtime': row['mtime'],
                     'mtime_formatted': datetime.fromtimestamp(float(row['mtime'])).strftime('%Y-%m-%d %H:%M:%S')
                 }
+            else:
+                logger.debug(f"✗ DB에 파일 없음: {path}")
+                # 대소문자 무시하고 검색
+                cursor2 = self.conn.execute(
+                    "SELECT path FROM files_fts WHERE LOWER(path) = LOWER(?)",
+                    (path,)
+                )
+                row2 = cursor2.fetchone()
+                if row2:
+                    logger.warning(f"경로 대소문자 불일치: DB={row2['path']}, 요청={path}")
+                
             return None
         except sqlite3.Error as e:
             logger.error(f"파일 상세 조회 오류 [{path}]: {e}")

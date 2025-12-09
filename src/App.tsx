@@ -17,6 +17,7 @@ interface FileItem {
   date: string;
   type: string; // 'folder' | 'file' extension
   path?: string; // Full path for navigation
+  indexed?: boolean; // 인덱싱 여부
 }
 
 interface FolderNode {
@@ -866,6 +867,31 @@ export default function App() {
         return a.name.localeCompare(b.name);
       });
 
+      // 파일들의 인덱싱 여부 확인
+      const filePaths = rawContent
+        .filter(item => item.type !== 'folder' && item.path)
+        .map(item => item.path!);
+      
+      if (filePaths.length > 0) {
+        try {
+          const indexedStatus = await BackendAPI.checkFilesIndexed(filePaths);
+          
+          // 각 파일에 인덱싱 여부 추가
+          rawContent = rawContent.map(item => {
+            if (item.type !== 'folder' && item.path) {
+              return {
+                ...item,
+                indexed: indexedStatus[item.path] || false
+              };
+            }
+            return item;
+          });
+        } catch (error) {
+          console.error('인덱싱 여부 확인 오류:', error);
+          // 오류 발생 시 indexed 필드 없이 진행
+        }
+      }
+
       let newHistory = activeTab.history;
       let newIndex = activeTab.historyIndex;
 
@@ -1349,16 +1375,35 @@ export default function App() {
         return;
       }
       
-      // 각 파일의 매칭 정보 표시
+      // 각 파일의 매칭 정보 표시 및 통계 집계
       let totalMatches = 0;
+      let filenameMatchCount = 0;
+      let contentMatchCount = 0;
+      
       results.forEach((result, index) => {
         // 매칭 수 계산 (rank를 기반으로 추정)
-        const matchCount = result.highlight ? result.highlight.length : Math.floor(result.rank * 10);
+        const matchCount = result.highlight ? result.highlight.length : 0;
         totalMatches += matchCount;
+        
+        // source 필드로 파일명/내용 매칭 카운트
+        if (result.source === 'filesystem') {
+          filenameMatchCount++;
+        } else if (result.source === 'database') {
+          contentMatchCount++;
+        }
         
         setTimeout(() => {
           const fileName = result.name;
-          const matchInfo = matchCount > 0 ? `${matchCount}개 매칭` : '파일명 매칭';
+          // source 필드로 정확한 매칭 유형 표시
+          let matchInfo = '';
+          if (result.source === 'filesystem') {
+            matchInfo = '파일명 매칭';
+          } else if (result.source === 'database') {
+            matchInfo = matchCount > 0 ? `내용 ${matchCount}개 매칭` : '내용 매칭';
+          } else {
+            // source가 없는 경우 (하위 호환성)
+            matchInfo = matchCount > 0 ? `${matchCount}개 매칭` : '매칭';
+          }
           addSearchLog(`  ✓ ${fileName} - ${matchInfo}`);
         }, 50 * (index + 1));
       });
@@ -1367,8 +1412,12 @@ export default function App() {
       setTimeout(() => {
         addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         addSearchLog(`✅ 검색 완료!`);
-        addSearchLog(`   파일: ${results.length}개 발견`);
-        addSearchLog(`   매칭: 총 ${totalMatches}개 발견`);
+        if (contentMatchCount > 0) {
+          addSearchLog(`   내용 매칭: 총 ${contentMatchCount}개 발견`);
+        }
+        if (filenameMatchCount > 0) {
+          addSearchLog(`   파일명 매칭: 총 ${filenameMatchCount}개 발견`);
+        }
         addSearchLog(`   검색 시간: ${(response.search_time || 0).toFixed(2)}초`);
         addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         
@@ -1386,7 +1435,8 @@ export default function App() {
             hour12: false
           }) : '-',
           type: result.extension || 'file',
-          path: result.path
+          path: result.path,
+          indexed: result.indexed || false  // 인덱싱 여부 추가
         }));
         
         updateActiveTab({ files: fileItems });
@@ -1748,6 +1798,18 @@ export default function App() {
                       <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden">
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
                         <span className="truncate">{file.name}</span>
+                        {file.indexed !== undefined && (
+                          <span 
+                            className="ml-2 flex-shrink-0" 
+                            title={file.indexed ? "인덱싱 완료" : "인덱싱 안됨"}
+                          >
+                            {file.indexed ? (
+                              <span className="text-green-400 text-[10px]">✓</span>
+                            ) : (
+                              <span className="text-gray-600 text-[10px]">○</span>
+                            )}
+                          </span>
+                        )}
                       </div>
                       
                       {/* 수직선: 점선(dashed)으로 변경하고 투명도(opacity)를 주어 희미하게 처리 */}
@@ -1939,10 +2001,11 @@ export default function App() {
                           </div>
                         </div>
                         <div className="text-yellow-400 text-sm font-semibold mt-4 text-center">
-                          ⚠️ 인덱싱 미완료 상태로 내역을 보여줄 수 없습니다
+                          ⚠️ 이 파일은 아직 인덱싱되지 않았습니다
                         </div>
-                        <div className="text-gray-500 text-xs mt-2 text-center">
-                          인덱싱이 완료되면 내용을 확인할 수 있습니다.
+                        <div className="text-gray-500 text-xs mt-2 text-center max-w-md">
+                          <div className="mb-2">이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.</div>
+                          <div className="text-yellow-300">💡 왼쪽 상단의 "색인" 탭에서 이 파일이 있는 폴더를 선택하고 "색인 시작" 버튼을 클릭하세요.</div>
                         </div>
                       </div>
                     )}

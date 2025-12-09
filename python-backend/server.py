@@ -355,17 +355,74 @@ def get_indexed_file_detail(file_path):
     특정 파일의 상세 정보 조회
     
     Args:
-        file_path: 파일 경로
+        file_path: 파일 경로 (URL 디코딩됨)
     """
     try:
-        file_detail = db_manager.get_indexed_file_detail(file_path)
+        # URL 디코딩 (Flask가 자동으로 하지만 한글 경로를 위해 명시적 처리)
+        from urllib.parse import unquote
+        decoded_path = unquote(file_path)
+        
+        logger.info(f"파일 상세 조회 요청: {decoded_path}")
+        
+        file_detail = db_manager.get_indexed_file_detail(decoded_path)
         
         if file_detail:
+            logger.info(f"✓ 파일 발견: {decoded_path} (길이: {file_detail.get('content_length', 0)}자)")
             return jsonify(file_detail)
         else:
+            logger.warning(f"✗ 파일 없음 (DB): {decoded_path}")
+            
+            # 디버깅: DB에 저장된 경로 샘플 확인
+            all_paths = db_manager.get_all_indexed_paths()
+            if all_paths:
+                # 비슷한 경로 찾기
+                import difflib
+                similar = difflib.get_close_matches(decoded_path, all_paths, n=3, cutoff=0.6)
+                if similar:
+                    logger.info(f"유사한 경로들: {similar[:3]}")
+            
             return jsonify({'error': 'File not found in index'}), 404
     except Exception as e:
         logger.error(f"파일 상세 조회 오류: {e}")
+        logger.error(f"요청 경로: {file_path}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/indexing/check-files', methods=['POST'])
+def check_files_indexed():
+    """
+    여러 파일의 인덱싱 여부를 일괄 확인
+    
+    Request Body:
+        {
+            "paths": ["C:\\path\\to\\file1.txt", "C:\\path\\to\\file2.docx", ...]
+        }
+    
+    Response:
+        {
+            "C:\\path\\to\\file1.txt": true,
+            "C:\\path\\to\\file2.docx": false,
+            ...
+        }
+    """
+    try:
+        data = request.json
+        paths = data.get('paths', [])
+        
+        if not paths:
+            return jsonify({}), 200
+        
+        # 각 파일의 인덱싱 여부 확인
+        result = {}
+        for path in paths:
+            is_indexed = db_manager.is_file_indexed(path)
+            result[path] = is_indexed
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"파일 인덱싱 여부 확인 오류: {e}")
         return jsonify({'error': str(e)}), 500
 
 
