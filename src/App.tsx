@@ -353,6 +353,13 @@ export default function App() {
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
 
+  // Initialize to Documents folder on first load
+  useEffect(() => {
+    const documentsPath = `${userHome}\\Documents`;
+    // 초기 로드 시 문서 폴더로 이동
+    navigate('문서', documentsPath);
+  }, []); // 빈 의존성 배열로 컴포넌트 마운트 시 한 번만 실행
+
   // Initialize DB statistics
   useEffect(() => {
     const loadDBStats = async () => {
@@ -531,6 +538,8 @@ export default function App() {
     const loadFileContent = async () => {
       if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
         const ext = activeTab.selectedFile.type.toLowerCase();
+        console.log('🔍 파일 선택됨:', activeTab.selectedFile.name, '확장자:', ext);
+        
         const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico'];
         const documentExtensions = ['txt', 'pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'hwp'];
         
@@ -588,7 +597,7 @@ export default function App() {
     };
     
     loadFileContent();
-  }, [activeTab.selectedFile]);
+  }, [activeTab.selectedFile?.path]); // path를 체크하여 파일 변경 감지
 
   // --- Helpers ---
   const updateActiveTab = (updates: Partial<TabItem>) => {
@@ -1953,7 +1962,7 @@ export default function App() {
                         <FileText size={12} />
                         <span>📝 AI 요약 (TextRank)</span>
                       </div>
-                      <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed">
+                      <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed" style={{ lineHeight: '1.8' }}>
                         {fileSummary}
                       </pre>
                     </div>

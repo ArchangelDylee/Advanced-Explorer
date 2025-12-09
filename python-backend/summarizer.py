@@ -46,9 +46,9 @@ class ContentSummarizer:
             stemmer = Stemmer('english')
             summarizer = TextRankSummarizer(stemmer)
             
-            # 요약 문장 추출
+            # 요약 문장 추출 (문단별 구분을 위해 빈 줄 추가)
             summary_sentences = summarizer(parser.document, sentences_count)
-            summary = '\n'.join([str(sentence) for sentence in summary_sentences])
+            summary = '\n\n'.join([str(sentence) for sentence in summary_sentences])
             
             if not summary:
                 return {
