@@ -295,7 +295,7 @@ class FileIndexer:
                                   '.java', '.cpp', '.c', '.h', '.cs', '.json', '.xml', '.html', 
                                   '.css', '.sql', '.sh', '.bat', '.ps1', '.yaml', '.yml'}
     
-    SUPPORTED_DOC_EXTENSIONS = {'.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.pdf', '.hwp'}
+    SUPPORTED_DOC_EXTENSIONS = {'.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.csv', '.pdf', '.hwp'}
     
     # 제외할 폴더 패턴
     EXCLUDED_DIRS = {
@@ -1694,6 +1694,10 @@ class FileIndexer:
             elif ext == '.xls' and WIN32COM_AVAILABLE:
                 return self._extract_xls(file_path)
             
+            # CSV
+            elif ext == '.csv':
+                return self._extract_csv(file_path)
+            
             # PDF
             elif ext == '.pdf' and PDF_AVAILABLE:
                 return self._extract_pdf(file_path)
@@ -2132,6 +2136,74 @@ class FileIndexer:
                 pythoncom.CoUninitialize()
             except:
                 pass
+            return None
+            
+        finally:
+            # 3단계: 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
+    
+    def _extract_csv(self, file_path: str) -> Optional[str]:
+        """
+        CSV 파일에서 텍스트 추출
+        Python 기본 csv 모듈 사용
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        """
+        import csv
+        temp_file = None
+        
+        try:
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ CSV 파일 복사 실패 (사용 중) - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: 임시 파일에서 텍스트 추출
+            text_parts = []
+            
+            # UTF-8, CP949(한글), Latin-1 순서로 시도
+            encodings = ['utf-8', 'cp949', 'euc-kr', 'latin-1']
+            content_read = False
+            
+            for encoding in encodings:
+                try:
+                    with open(temp_file, 'r', encoding=encoding, errors='ignore') as f:
+                        csv_reader = csv.reader(f)
+                        
+                        for row in csv_reader:
+                            # 각 행의 셀들을 탭으로 구분하여 추가
+                            row_text = '\t'.join(str(cell) for cell in row if cell)
+                            if row_text.strip():
+                                text_parts.append(row_text)
+                    
+                    content_read = True
+                    logger.debug(f"✅ CSV 파일 인덱싱 완료 (임시 복사본, 인코딩: {encoding}): {os.path.basename(file_path)}")
+                    break
+                    
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            
+            if not content_read:
+                logger.info(f"⚠️ CSV 파일 인코딩 처리 실패: {os.path.basename(file_path)}")
+                return None
+            
+            return '\n'.join(text_parts)[:100000]
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            filename = os.path.basename(file_path)
+            
+            # 접근 불가 = 재시도
+            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                logger.info(f"⛔ CSV 파일 접근 불가 - 나중에 재시도: {filename}")
+                self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
+                self._add_to_retry_queue(file_path, "파일 접근 불가")
+            else:
+                logger.debug(f"CSV 추출 오류 [{filename}]: {e}")
             return None
             
         finally:

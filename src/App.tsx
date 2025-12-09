@@ -312,7 +312,7 @@ export default function App() {
   const [colWidths, setColWidths] = useLocalStorage<ColWidthsState>('colWidths', { name: 350, size: 100, date: 150 });
   const [searchHistory, setSearchHistory] = useLocalStorage<string[]>('searchHistory', ['기획서', '2023년 정산']);
   const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true, subfolder: true });
-  const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, etc: false });
+  const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, csv: true, etc: false });
   const [folderStructure, setFolderStructure] = useLocalStorage<FolderNode[]>('folderStructure', MOCK_FOLDERS_INITIAL);
 
   // Tabs (Multi-instance)
@@ -629,7 +629,6 @@ export default function App() {
   // 인덱싱 로그에서 파일 클릭 시 인덱스 내용 표시
   const handleIndexLogClick = async (filePath: string) => {
     console.log('🔍 인덱스 파일 클릭:', filePath);
-    addSearchLog(`🔍 인덱스 조회 요청: ${filePath.split('\\').pop()}`);
     
     try {
       const detail = await BackendAPI.getIndexedFileDetail(filePath);
@@ -638,10 +637,11 @@ export default function App() {
       if (detail && detail.content) {
         setFileContent(detail.content);
         setFileSummary(null); // 요약 초기화
-        addSearchLog(`✅ 인덱스 조회 성공: ${filePath.split('\\').pop()} (${detail.content.length}자)`);
+        // 내용 보기 및 편집 창으로 자동 전환
+        setShowIndexingLog(false);
       } else {
         setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
-        addSearchLog(`⚠️ 인덱스 조회 실패 (내용 없음): ${filePath.split('\\').pop()}`);
+        setShowIndexingLog(false);
       }
     } catch (error: any) {
       console.error('❌ 인덱스 조회 오류:', error);
@@ -649,11 +649,10 @@ export default function App() {
       
       if (errorMsg.includes('404')) {
         setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
-        addSearchLog(`❌ 404 오류: ${filePath.split('\\').pop()} (DB에 없음)`);
       } else {
         setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
-        addSearchLog(`❌ 인덱스 조회 오류: ${filePath.split('\\').pop()} - ${errorMsg}`);
       }
+      setShowIndexingLog(false);
     }
   };
 
@@ -1648,7 +1647,7 @@ export default function App() {
             <span className="text-[#D0D0D0]">인덱싱 DB 저장 파일 수: {dbTotalCount.toLocaleString()} 개</span>
           </div>
           <div className="flex space-x-4">
-            {['ppt', 'doc', 'hwp', 'txt', 'pdf'].map(ext => (
+            {['ppt', 'doc', 'hwp', 'txt', 'pdf', 'csv'].map(ext => (
               <Checkbox key={ext} id={`filter_${ext}`} label={ext} checked={typeFilters[ext]} onChange={(v) => setTypeFilters(p => ({...p, [ext]: v}))} />
             ))}
           </div>
@@ -1850,6 +1849,62 @@ export default function App() {
                     </div>
                   )}
                 </div>
+              ) : fileContent ? (
+                // 인덱싱 로그에서 클릭한 파일의 내용 표시
+                <div className="h-full flex flex-col gap-2 p-3 bg-[#151515] border border-[#333] rounded">
+                  <div className="text-sm text-gray-400 border-b border-[#333] pb-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="font-bold">인덱싱된 파일 내용</div>
+                        <div className="text-xs mt-1 text-green-400">
+                          ✓ 인덱싱 DB에서 불러온 내용
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleSummarize}
+                        disabled={isSummarizing}
+                        className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                          isSummarizing 
+                            ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                            : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                        }`}
+                      >
+                        {isSummarizing ? (
+                          <>
+                            <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                            요약 중...
+                          </>
+                        ) : (
+                          <>
+                            <FileText size={12} />
+                            요약 생성
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* 요약 결과 표시 */}
+                  {fileSummary && (
+                    <div className="bg-[#1a3a1a] border border-green-800 rounded p-3 mb-2">
+                      <div className="flex items-center gap-2 mb-2 text-green-400 text-xs font-bold">
+                        <FileText size={12} />
+                        <span>📝 AI 요약 (TextRank)</span>
+                      </div>
+                      <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed">
+                        {fileSummary}
+                      </pre>
+                    </div>
+                  )}
+                  
+                  {/* 전체 내용 */}
+                  <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded p-3">
+                    <div className="text-[10px] text-gray-500 mb-2">전체 내용:</div>
+                    <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
+                      {fileContent}
+                    </pre>
+                  </div>
+                </div>
               ) : (
                 activeTab.selectedFile ? (
                   <div className="h-full">
@@ -1872,64 +1927,6 @@ export default function App() {
                             className="max-w-full max-h-full object-contain"
                             style={{ imageRendering: 'auto' }}
                           />
-                        </div>
-                      </div>
-                    ) : fileContent ? (
-                      <div className="h-full flex flex-col gap-2 p-3 bg-[#151515] border border-[#333] rounded">
-                        <div className="text-sm text-gray-400 border-b border-[#333] pb-2">
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <div className="font-bold">{activeTab.selectedFile.name}</div>
-                              <div className="text-xs mt-1">
-                                크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
-                              </div>
-                              <div className="text-xs mt-1 text-green-400">
-                                ✓ 인덱싱된 내용
-                              </div>
-                            </div>
-                            <button
-                              onClick={handleSummarize}
-                              disabled={isSummarizing}
-                              className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                                isSummarizing 
-                                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
-                                  : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
-                              }`}
-                            >
-                              {isSummarizing ? (
-                                <>
-                                  <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                                  요약 중...
-                                </>
-                              ) : (
-                                <>
-                                  <FileText size={12} />
-                                  요약 생성
-                                </>
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                        
-                        {/* 요약 결과 표시 */}
-                        {fileSummary && (
-                          <div className="bg-[#1a3a1a] border border-green-800 rounded p-3 mb-2">
-                            <div className="flex items-center gap-2 mb-2 text-green-400 text-xs font-bold">
-                              <FileText size={12} />
-                              <span>📝 AI 요약 (TextRank)</span>
-                            </div>
-                            <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed">
-                              {fileSummary}
-                            </pre>
-                          </div>
-                        )}
-                        
-                        {/* 전체 내용 */}
-                        <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded p-3">
-                          <div className="text-[10px] text-gray-500 mb-2">전체 내용:</div>
-                          <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
-                            {fileContent}
-                          </pre>
                         </div>
                       </div>
                     ) : (
