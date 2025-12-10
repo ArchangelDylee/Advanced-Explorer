@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, Play, Square, Pause, Folder, File, FileText, 
-  Monitor, HardDrive, Trash2, Copy, Clipboard, MoreHorizontal,
-  ChevronRight, ChevronDown, Image as ImageIcon, Info,
+  Monitor, HardDrive, Trash2, Copy, Clipboard,
+  ChevronRight, ChevronDown, Image as ImageIcon,
   ArrowUp, ArrowDown, Clock, X, Plus,
   FileSpreadsheet, FileCode, FileArchive, LayoutTemplate,
   FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity
@@ -105,7 +105,7 @@ interface IndexLogEntry {
   time: string;
   path: string;
   filename?: string;  // 파일명 (렌더링용)
-  status: 'Indexed' | 'Skipped' | 'Error' | 'Success' | 'Skip' | 'Indexing' | 'Retry Success' | 'Info';
+  status: 'Indexed' | 'Skipped' | 'Error' | 'Success' | 'Skip' | 'Indexing' | 'Retry Success' | 'Info' | '파싱완료';
   size: string;
 }
 
@@ -116,7 +116,6 @@ interface ResizerProps {
 }
 
 interface CheckboxProps {
-  id: string;
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -284,7 +283,7 @@ const Resizer: React.FC<ResizerProps> = ({ direction, onResize }) => {
   return <div onMouseDown={() => setIsDragging(true)} className={`${direction === 'horizontal' ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize'} hover:bg-[#0067C0] bg-transparent z-50`} />;
 };
 
-const Checkbox: React.FC<CheckboxProps> = ({ id, label, checked, onChange }) => (
+const Checkbox: React.FC<CheckboxProps> = ({ label, checked, onChange }) => (
   <label className="flex items-center space-x-2 cursor-pointer select-none group active:opacity-70 transition-opacity" onClick={() => onChange(!checked)}>
     <div className={`w-4 h-4 border flex items-center justify-center transition-colors ${checked ? 'border-[#777777] bg-[#0067C0]' : 'border-[#777777] bg-transparent'}`}>
       {checked && <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-none stroke-white stroke-2"><path d="M3 8 L6 11 L13 4" /></svg>}
@@ -342,15 +341,8 @@ export default function App() {
   const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
   const [indexingStatus, setIndexingStatus] = useState<string>('대기 중...');
-  const [indexingStats, setIndexingStats] = useState<BackendAPI.IndexingStats | null>(null);
-  
-  // AbortController for canceling previous requests
-  const statusAbortControllerRef = useRef<AbortController | null>(null);
-  const logsAbortControllerRef = useRef<AbortController | null>(null);
-  const statsAbortControllerRef = useRef<AbortController | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   
-  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
 
   // Initialize to Documents folder on first load
@@ -608,17 +600,6 @@ export default function App() {
     setSearchLog(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
   };
 
-  const addIndexingLog = (status: string, filename: string, detail: string) => {
-    const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
-    const newLog: IndexLogEntry = {
-      time,
-      path: filename,
-      status,
-      size: detail
-    };
-    setIndexingLog(prev => [newLog, ...prev].slice(0, 1000)); // 최대 1000개까지 유지
-  };
-  
   // 인덱싱 상태 메시지 추가 (간단한 텍스트)
   const addIndexingMessage = (message: string) => {
     const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
@@ -771,7 +752,7 @@ export default function App() {
       let found = false;
       const updatedNodes = await Promise.all(nodes.map(async (node) => {
         // 모든 노드의 selected를 false로 초기화
-        let updatedNode = { ...node, selected: false };
+        let updatedNode: FolderNode = { ...node, selected: false };
         
         // 현재 노드가 타겟 경로와 일치하는지 확인
         const nodePath = node.path || node.name;
@@ -782,18 +763,22 @@ export default function App() {
         
         if (isMatch) {
           // 정확히 일치하면 선택하고 펼치기
-          updatedNode.selected = true;
-          updatedNode.expanded = true;
+          updatedNode = {
+            ...updatedNode,
+            selected: true,
+            expanded: true
+          };
           
           // 하위 폴더가 로드되지 않았다면 로드
           if (!updatedNode.childrenLoaded && node.path) {
-            await loadSubfoldersForSync(updatedNode);
+            const loadedNode = await loadSubfoldersForSync(updatedNode);
+            updatedNode = { ...loadedNode, selected: true };
           }
           
           found = true;
         } else if (isParentOfTarget) {
           // 부모 노드라면 펼치기
-          updatedNode.expanded = true;
+          updatedNode = { ...updatedNode, expanded: true };
           
           // 하위 폴더가 로드되지 않았다면 로드
           if (!updatedNode.childrenLoaded && node.path) {
@@ -803,13 +788,19 @@ export default function App() {
           // 자식들을 재귀적으로 확인
           if (updatedNode.children) {
             const childResult = await updateTreeNode(updatedNode.children, pathToFind);
-            updatedNode.children = childResult.nodes;
+            updatedNode = {
+              ...updatedNode,
+              children: childResult.nodes
+            };
             found = childResult.found;
           }
         } else if (node.children) {
           // 그 외의 경우 자식들만 업데이트 (selected: false 적용)
           const childResult = await updateTreeNode(node.children, pathToFind);
-          updatedNode.children = childResult.nodes;
+          updatedNode = {
+            ...updatedNode,
+            children: childResult.nodes
+          };
           if (childResult.found) found = true;
         }
         
@@ -825,7 +816,7 @@ export default function App() {
 
   // 동기화용 하위 폴더 로드 (폴더 구조 반환)
   const loadSubfoldersForSync = async (node: FolderNode): Promise<FolderNode> => {
-    if (node.childrenLoaded || !node.path) return node;
+    if (node.childrenLoaded || !node.path) return { ...node, selected: node.selected ?? false };
     
     if (typeof window !== 'undefined' && (window as any).electronAPI) {
       try {
@@ -837,6 +828,7 @@ export default function App() {
         
         return {
           ...node,
+          selected: node.selected ?? false,
           children: validSubdirs.map((dir: any) => ({
             name: dir.name,
             icon: 'Folder',
@@ -851,10 +843,10 @@ export default function App() {
         };
       } catch (error) {
         console.error('Error loading subfolders for sync:', error);
-        return node;
+        return { ...node, selected: node.selected ?? false };
       }
     }
-    return node;
+    return { ...node, selected: node.selected ?? false };
   };
 
   // --- Navigation & Core Logic ---
@@ -1674,8 +1666,8 @@ export default function App() {
             <Square size={14} className="mr-1" fill="currentColor"/> 중지
           </button>
           <div className="w-4" />
-          <Checkbox id="opt_content" label="내용 포함" checked={searchOptions.content} onChange={(v) => setSearchOptions(p => ({...p, content: v}))} />
-          <Checkbox id="opt_sub" label="하위 폴더" checked={searchOptions.subfolder} onChange={(v) => setSearchOptions(p => ({...p, subfolder: v}))} />
+          <Checkbox label="내용 포함" checked={searchOptions.content} onChange={(v) => setSearchOptions(p => ({...p, content: v}))} />
+          <Checkbox label="하위 폴더" checked={searchOptions.subfolder} onChange={(v) => setSearchOptions(p => ({...p, subfolder: v}))} />
         </div>
 
         {/* Row 2: Indexing & Filters */}
@@ -1707,7 +1699,7 @@ export default function App() {
           </div>
           <div className="flex space-x-4">
             {['ppt', 'doc', 'hwp', 'txt', 'pdf', 'csv'].map(ext => (
-              <Checkbox key={ext} id={`filter_${ext}`} label={ext} checked={typeFilters[ext]} onChange={(v) => setTypeFilters(p => ({...p, [ext]: v}))} />
+              <Checkbox key={ext} label={ext} checked={typeFilters[ext]} onChange={(v) => setTypeFilters(p => ({...p, [ext]: v}))} />
             ))}
           </div>
         </div>

@@ -1,0 +1,1101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1400</width>
+    <height>900</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>1000</width>
+    <height>700</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>Advanced Explorer</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+QMainWindow {
+    background-color: #191919;
+    color: #FFFFFF;
+}
+QWidget {
+    background-color: #202020;
+    color: #D0D0D0;
+    font-family: 'Segoe UI';
+    font-size: 12px;
+}
+QPushButton {
+    background-color: #0067C0;
+    color: white;
+    border: 1px solid #005A9E;
+    border-radius: 2px;
+    padding: 6px 16px;
+}
+QPushButton:hover {
+    background-color: #0078D7;
+}
+QPushButton:pressed {
+    background-color: #005a9e;
+}
+QPushButton:disabled {
+    background-color: #333;
+    color: #666;
+    border-color: #444;
+}
+QLineEdit {
+    background-color: #2C2C2C;
+    border: 1px solid #444;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 2px;
+}
+QLineEdit:focus {
+    border-color: #0067C0;
+}
+QTreeWidget, QListWidget, QTableWidget {
+    background-color: #202020;
+    border: 1px solid #444;
+    color: #D0D0D0;
+    alternate-background-color: #252525;
+}
+QTreeWidget::item:hover, QListWidget::item:hover, QTableWidget::item:hover {
+    background-color: #2C2C2C;
+}
+QTreeWidget::item:selected, QListWidget::item:selected, QTableWidget::item:selected {
+    background-color: #333333;
+    border: 1px solid #0067C0;
+}
+QHeaderView::section {
+    background-color: #2C2C2C;
+    color: #D0D0D0;
+    border: none;
+    border-right: 1px solid #444;
+    padding: 4px 8px;
+}
+QTabWidget::pane {
+    border: 1px solid #2C2C2C;
+    background-color: #202020;
+}
+QTabBar::tab {
+    background-color: transparent;
+    color: #AAA;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    padding: 8px 16px;
+    min-width: 150px;
+}
+QTabBar::tab:selected {
+    background-color: #202020;
+    color: white;
+    border: 1px solid #333;
+    border-bottom: none;
+}
+QTabBar::tab:hover {
+    background-color: #1F1F1F;
+}
+QSplitter::handle {
+    background-color: #444;
+    width: 2px;
+    height: 2px;
+}
+QSplitter::handle:hover {
+    background-color: #0067C0;
+}
+QScrollBar:vertical {
+    background-color: #202020;
+    width: 10px;
+}
+QScrollBar::handle:vertical {
+    background-color: #444;
+    border-radius: 5px;
+    min-height: 20px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #666;
+}
+QScrollBar:horizontal {
+    background-color: #202020;
+    height: 10px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #444;
+    border-radius: 5px;
+    min-width: 20px;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #666;
+}
+QCheckBox {
+    color: #D0D0D0;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #777;
+    background-color: transparent;
+}
+QCheckBox::indicator:checked {
+    background-color: #0067C0;
+    border-color: #0067C0;
+}
+QTextEdit, QPlainTextEdit {
+    background-color: #151515;
+    border: 1px solid #333;
+    color: #D0D0D0;
+}
+QLabel {
+    color: #D0D0D0;
+}
+QProgressBar {
+    border: 1px solid #444;
+    background-color: #2C2C2C;
+    text-align: center;
+    color: white;
+}
+QProgressBar::chunk {
+    background-color: #0067C0;
+}
+   </string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <property name="spacing">
+     <number>0</number>
+    </property>
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
+     <number>0</number>
+    </property>
+    <item>
+     <!-- Tab Widget for Multiple Instances -->
+     <widget class="QTabWidget" name="tabWidget">
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <property name="tabsClosable">
+       <bool>true</bool>
+      </property>
+      <property name="movable">
+       <bool>true</bool>
+      </property>
+      <widget class="QWidget" name="tab1">
+       <attribute name="title">
+        <string>내 PC</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="tabLayout">
+        <item>
+         <!-- Search and Options Panel -->
+         <widget class="QWidget" name="searchPanel">
+          <property name="minimumHeight">
+           <number>110</number>
+          </property>
+          <property name="maximumHeight">
+           <number>110</number>
+          </property>
+          <layout class="QVBoxLayout" name="searchPanelLayout">
+           <item>
+            <!-- Search Row -->
+            <layout class="QHBoxLayout" name="searchRowLayout">
+             <item>
+              <widget class="QLineEdit" name="searchInput">
+               <property name="placeholderText">
+                <string>검색어를 입력하세요...</string>
+               </property>
+               <property name="minimumWidth">
+                <number>300</number>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btnSearch">
+               <property name="text">
+                <string>🔍 검색</string>
+               </property>
+               <property name="minimumWidth">
+                <number>100</number>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btnStopSearch">
+               <property name="text">
+                <string>⏹ 중지</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QWidget" name="spacer1">
+               <property name="minimumWidth">
+                <number>16</number>
+               </property>
+               <property name="maximumWidth">
+                <number>16</number>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkSearchContent">
+               <property name="text">
+                <string>내용 포함</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkSearchSubfolder">
+               <property name="text">
+                <string>하위 폴더</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacer">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <!-- Indexing Row -->
+            <layout class="QHBoxLayout" name="indexingRowLayout">
+             <item>
+              <widget class="QLabel" name="labelIndexing">
+               <property name="text">
+                <string>색인:</string>
+               </property>
+               <property name="styleSheet">
+                <string notr="true">font-weight: bold;</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btnStartIndexing">
+               <property name="text">
+                <string>▶ 시작</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btnStopIndexing">
+               <property name="text">
+                <string>⏸ 중지</string>
+               </property>
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="labelIndexingStatus">
+               <property name="text">
+                <string>대기 중...</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="labelDbCount">
+               <property name="text">
+                <string>인덱싱 DB 저장 파일 수: 0 개</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacer2">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkFilterPpt">
+               <property name="text">
+                <string>ppt</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkFilterDoc">
+               <property name="text">
+                <string>doc</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkFilterHwp">
+               <property name="text">
+                <string>hwp</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkFilterTxt">
+               <property name="text">
+                <string>txt</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="chkFilterPdf">
+               <property name="text">
+                <string>pdf</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <!-- Main Content Area -->
+         <widget class="QSplitter" name="mainSplitter">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <widget class="QSplitter" name="topSplitter">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <!-- Left Sidebar -->
+           <widget class="QWidget" name="leftSidebar">
+            <property name="minimumWidth">
+             <number>150</number>
+            </property>
+            <layout class="QVBoxLayout" name="sidebarLayout">
+             <property name="spacing">
+              <number>0</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <!-- Toolbar -->
+              <widget class="QWidget" name="toolbar">
+               <property name="minimumHeight">
+                <number>36</number>
+               </property>
+               <property name="maximumHeight">
+                <number>36</number>
+               </property>
+               <layout class="QHBoxLayout" name="toolbarLayout">
+                <item>
+                 <widget class="QPushButton" name="btnBack">
+                  <property name="text">
+                   <string>◀</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>뒤로</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnForward">
+                  <property name="text">
+                   <string>▶</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>앞으로</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="separator1">
+                  <property name="text">
+                   <string>|</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>8</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnNewFolder">
+                  <property name="text">
+                   <string>📁+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>새 폴더</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnCopy">
+                  <property name="text">
+                   <string>📋</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>복사</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnRename">
+                  <property name="text">
+                   <string>✏</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>이름 변경</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnDelete">
+                  <property name="text">
+                   <string>🗑</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>삭제</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnPaste">
+                  <property name="text">
+                   <string>📄</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>붙여넣기</string>
+                  </property>
+                  <property name="maximumWidth">
+                   <number>32</number>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <!-- Favorites Section -->
+              <widget class="QGroupBox" name="favoritesGroup">
+               <property name="title">
+                <string>⭐ 즐겨찾기</string>
+               </property>
+               <property name="minimumHeight">
+                <number>180</number>
+               </property>
+               <layout class="QVBoxLayout" name="favoritesLayout">
+                <item>
+                 <widget class="QListWidget" name="favoritesList">
+                  <property name="alternatingRowColors">
+                   <bool>true</bool>
+                  </property>
+                  <item>
+                   <property name="text">
+                    <string>📁 문서</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>🖥 바탕화면</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>📁 다운로드</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>🖼 사진</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>📄 음악</string>
+                   </property>
+                  </item>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <!-- Folder Tree Section -->
+              <widget class="QGroupBox" name="folderTreeGroup">
+               <property name="title">
+                <string>📁 폴더 트리</string>
+               </property>
+               <layout class="QVBoxLayout" name="folderTreeLayout">
+                <item>
+                 <widget class="QTreeWidget" name="folderTree">
+                  <property name="alternatingRowColors">
+                   <bool>true</bool>
+                  </property>
+                  <property name="indentation">
+                   <number>20</number>
+                  </property>
+                  <property name="headerHidden">
+                   <bool>true</bool>
+                  </property>
+                  <column>
+                   <property name="text">
+                    <string>Folder</string>
+                   </property>
+                  </column>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <!-- File List -->
+           <widget class="QWidget" name="fileListContainer">
+            <property name="minimumWidth">
+             <number>200</number>
+            </property>
+            <layout class="QVBoxLayout" name="fileListContainerLayout">
+             <property name="spacing">
+              <number>0</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QTableWidget" name="fileListTable">
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <property name="selectionMode">
+                <enum>QAbstractItemView::SingleSelection</enum>
+               </property>
+               <property name="selectionBehavior">
+                <enum>QAbstractItemView::SelectRows</enum>
+               </property>
+               <property name="sortingEnabled">
+                <bool>true</bool>
+               </property>
+               <column>
+                <property name="text">
+                 <string>이름</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>크기</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>수정한 날짜</string>
+                </property>
+               </column>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <!-- Preview Panel -->
+           <widget class="QWidget" name="previewPanel">
+            <property name="minimumWidth">
+             <number>200</number>
+            </property>
+            <layout class="QVBoxLayout" name="previewPanelLayout">
+             <property name="spacing">
+              <number>0</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <!-- Preview Header -->
+              <widget class="QWidget" name="previewHeader">
+               <property name="minimumHeight">
+                <number>32</number>
+               </property>
+               <property name="maximumHeight">
+                <number>32</number>
+               </property>
+               <layout class="QHBoxLayout" name="previewHeaderLayout">
+                <item>
+                 <widget class="QLabel" name="labelPreview">
+                  <property name="text">
+                   <string>내용 보기 및 편집</string>
+                  </property>
+                  <property name="styleSheet">
+                   <string notr="true">font-weight: bold;</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <spacer name="horizontalSpacer3">
+                  <property name="orientation">
+                   <enum>Qt::Horizontal</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                   <size>
+                    <width>40</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="btnToggleIndexingView">
+                  <property name="text">
+                   <string>📊 인덱싱 보기</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <!-- Preview Content (Stack Widget) -->
+              <widget class="QStackedWidget" name="previewStack">
+               <property name="currentIndex">
+                <number>0</number>
+               </property>
+               <!-- Page 1: File Preview -->
+               <widget class="QWidget" name="filePreviewPage">
+                <layout class="QVBoxLayout" name="filePreviewLayout">
+                 <item>
+                  <widget class="QLabel" name="labelImagePreview">
+                   <property name="text">
+                    <string>선택된 파일 없음</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignCenter</set>
+                   </property>
+                   <property name="scaledContents">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QTextEdit" name="textPreview">
+                   <property name="readOnly">
+                    <bool>true</bool>
+                   </property>
+                   <property name="placeholderText">
+                    <string>파일 내용 미리보기는 이미지 파일만 지원됩니다.</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </widget>
+               <!-- Page 2: Indexing DB View -->
+               <widget class="QWidget" name="indexingDbPage">
+                <layout class="QVBoxLayout" name="indexingDbLayout">
+                 <item>
+                  <widget class="QLabel" name="labelDbTitle">
+                   <property name="text">
+                    <string>인덱싱 DB 조회 결과</string>
+                   </property>
+                   <property name="styleSheet">
+                    <string notr="true">font-size: 14px; font-weight: bold; color: #0078D7;</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QTableWidget" name="indexedDbTable">
+                   <property name="alternatingRowColors">
+                    <bool>true</bool>
+                   </property>
+                   <column>
+                    <property name="text">
+                     <string>#</string>
+                    </property>
+                   </column>
+                   <column>
+                    <property name="text">
+                     <string>경로</string>
+                    </property>
+                   </column>
+                   <column>
+                    <property name="text">
+                     <string>크기</string>
+                    </property>
+                   </column>
+                   <column>
+                    <property name="text">
+                     <string>수정일</string>
+                    </property>
+                   </column>
+                  </widget>
+                 </item>
+                </layout>
+               </widget>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+          <!-- Bottom Panel (Logs) -->
+          <widget class="QSplitter" name="bottomPanelSplitter">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="minimumHeight">
+            <number>50</number>
+           </property>
+           <!-- Search Log -->
+           <widget class="QWidget" name="searchLogPanel">
+            <layout class="QVBoxLayout" name="searchLogLayout">
+             <property name="spacing">
+              <number>0</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QLabel" name="labelSearchLog">
+               <property name="text">
+                <string>🔍 Search Log</string>
+               </property>
+               <property name="minimumHeight">
+                <number>24</number>
+               </property>
+               <property name="maximumHeight">
+                <number>24</number>
+               </property>
+               <property name="styleSheet">
+                <string notr="true">background-color: #252525; padding: 4px; font-weight: bold;</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPlainTextEdit" name="searchLogText">
+               <property name="readOnly">
+                <bool>true</bool>
+               </property>
+               <property name="plainText">
+                <string>검색 진행 상태를 보여 줍니다</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <!-- Indexing Log -->
+           <widget class="QWidget" name="indexingLogPanel">
+            <layout class="QVBoxLayout" name="indexingLogLayout">
+             <property name="spacing">
+              <number>0</number>
+             </property>
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QLabel" name="labelIndexingLog">
+               <property name="text">
+                <string>📈 Indexing Log</string>
+               </property>
+               <property name="minimumHeight">
+                <number>24</number>
+               </property>
+               <property name="maximumHeight">
+                <number>24</number>
+               </property>
+               <property name="styleSheet">
+                <string notr="true">background-color: #252525; padding: 4px; font-weight: bold;</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QTableWidget" name="indexingLogTable">
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <column>
+                <property name="text">
+                 <string>시간</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>상태</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>파일</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>상세</string>
+                </property>
+               </column>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1400</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>파일(&amp;F)</string>
+    </property>
+    <addaction name="actionNewTab"/>
+    <addaction name="actionCloseTab"/>
+    <addaction name="separator"/>
+    <addaction name="actionExit"/>
+   </widget>
+   <widget class="QMenu" name="menuEdit">
+    <property name="title">
+     <string>편집(&amp;E)</string>
+    </property>
+    <addaction name="actionCopy"/>
+    <addaction name="actionPaste"/>
+    <addaction name="actionDelete"/>
+    <addaction name="separator"/>
+    <addaction name="actionRename"/>
+   </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title">
+     <string>보기(&amp;V)</string>
+    </property>
+    <addaction name="actionRefresh"/>
+    <addaction name="separator"/>
+    <addaction name="actionToggleSidebar"/>
+    <addaction name="actionTogglePreview"/>
+   </widget>
+   <widget class="QMenu" name="menuTools">
+    <property name="title">
+     <string>도구(&amp;T)</string>
+    </property>
+    <addaction name="actionStartIndexing"/>
+    <addaction name="actionStopIndexing"/>
+    <addaction name="separator"/>
+    <addaction name="actionSettings"/>
+   </widget>
+   <widget class="QMenu" name="menuHelp">
+    <property name="title">
+     <string>도움말(&amp;H)</string>
+    </property>
+    <addaction name="actionAbout"/>
+   </widget>
+   <addaction name="menuFile"/>
+   <addaction name="menuEdit"/>
+   <addaction name="menuView"/>
+   <addaction name="menuTools"/>
+   <addaction name="menuHelp"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="actionNewTab">
+   <property name="text">
+    <string>새 탭(&amp;N)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+T</string>
+   </property>
+  </action>
+  <action name="actionCloseTab">
+   <property name="text">
+    <string>탭 닫기(&amp;W)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+W</string>
+   </property>
+  </action>
+  <action name="actionExit">
+   <property name="text">
+    <string>종료(&amp;X)</string>
+   </property>
+   <property name="shortcut">
+    <string>Alt+F4</string>
+   </property>
+  </action>
+  <action name="actionCopy">
+   <property name="text">
+    <string>복사(&amp;C)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+C</string>
+   </property>
+  </action>
+  <action name="actionPaste">
+   <property name="text">
+    <string>붙여넣기(&amp;V)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+V</string>
+   </property>
+  </action>
+  <action name="actionDelete">
+   <property name="text">
+    <string>삭제(&amp;D)</string>
+   </property>
+   <property name="shortcut">
+    <string>Del</string>
+   </property>
+  </action>
+  <action name="actionRename">
+   <property name="text">
+    <string>이름 변경(&amp;R)</string>
+   </property>
+   <property name="shortcut">
+    <string>F2</string>
+   </property>
+  </action>
+  <action name="actionRefresh">
+   <property name="text">
+    <string>새로고침(&amp;F)</string>
+   </property>
+   <property name="shortcut">
+    <string>F5</string>
+   </property>
+  </action>
+  <action name="actionToggleSidebar">
+   <property name="text">
+    <string>사이드바 토글</string>
+   </property>
+  </action>
+  <action name="actionTogglePreview">
+   <property name="text">
+    <string>미리보기 토글</string>
+   </property>
+  </action>
+  <action name="actionStartIndexing">
+   <property name="text">
+    <string>인덱싱 시작</string>
+   </property>
+  </action>
+  <action name="actionStopIndexing">
+   <property name="text">
+    <string>인덱싱 중지</string>
+   </property>
+  </action>
+  <action name="actionSettings">
+   <property name="text">
+    <string>설정(&amp;S)</string>
+   </property>
+  </action>
+  <action name="actionAbout">
+   <property name="text">
+    <string>정보(&amp;A)</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+
