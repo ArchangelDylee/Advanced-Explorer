@@ -345,6 +345,7 @@ export default function App() {
   const [indexingStatus, setIndexingStatus] = useState<string>('대기 중...');
   const [indexingStats, setIndexingStats] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
+  const [textContextMenu, setTextContextMenu] = useState<{ visible: boolean; x: number; y: number; selectedText: string }>({ visible: false, x: 0, y: 0, selectedText: '' });
   
   // AbortController refs for cancelling pending requests
   const statusAbortControllerRef = React.useRef<AbortController | null>(null);
@@ -604,7 +605,7 @@ export default function App() {
         const ext = activeTab.selectedFile.type.toLowerCase();
         console.log('🔍 파일 선택됨:', activeTab.selectedFile.name, '확장자:', ext);
         
-        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico'];
+        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff', 'tif'];
         const documentExtensions = [
           // Office 문서
           'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'hwp', 'hwpx',
@@ -618,35 +619,51 @@ export default function App() {
         
         if (imageExtensions.includes(ext)) {
           // 이미지 파일 - 미리보기 + OCR 텍스트 로드
+          console.log('🖼️ 이미지 파일 선택:', activeTab.selectedFile.name, 'Path:', activeTab.selectedFile.path);
+          
           if (typeof window !== 'undefined' && (window as any).electronAPI) {
             try {
               // 이미지 미리보기 로드
               const electronAPI = (window as any).electronAPI;
+              console.log('📸 이미지 파일 읽기 시도...');
               const result = await electronAPI.readImageFile(activeTab.selectedFile.path);
               
-              if (result.success) {
+              if (result.success && result.dataUrl) {
+                console.log('✅ 이미지 미리보기 로드 성공');
                 setImagePreview(result.dataUrl);
               } else {
+                console.warn('⚠️ 이미지 미리보기 로드 실패:', result.error || 'Unknown error');
                 setImagePreview(null);
+                setFileContent(`⚠️ 이미지 미리보기를 불러올 수 없습니다.\n\n오류: ${result.error || '알 수 없는 오류'}`);
               }
               
               // OCR된 텍스트 로드 (인덱싱되어 있으면)
               try {
                 const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
                 if (detail && detail.content) {
+                  console.log('✅ OCR 텍스트 로드 성공');
                   setFileContent(detail.content);
                 } else {
-                  setFileContent('⚠️ OCR 텍스트가 없습니다.\n\n이미지가 인덱싱되지 않았거나\n텍스트를 인식할 수 없습니다.\n\n인덱싱을 시작하여 OCR을 수행하세요.');
+                  console.log('ℹ️ OCR 텍스트 없음');
+                  if (!fileContent?.includes('⚠️')) {
+                    setFileContent('ℹ️ OCR 텍스트가 없습니다.\n\n이미지를 인덱싱하면 텍스트를 추출할 수 있습니다.');
+                  }
                 }
               } catch (error) {
-                console.error('이미지 OCR 텍스트 조회 오류:', error);
-                setFileContent('⚠️ OCR 텍스트를 불러올 수 없습니다.\n\n이미지를 인덱싱하면 텍스트를 추출할 수 있습니다.');
+                console.log('ℹ️ OCR 텍스트 조회 불가:', error);
+                if (!fileContent?.includes('⚠️')) {
+                  setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
+                }
               }
             } catch (error) {
-              console.error('이미지 로드 오류:', error);
+              console.error('❌ 이미지 로드 오류:', error);
               setImagePreview(null);
-              setFileContent(null);
+              setFileContent(`❌ 이미지를 불러올 수 없습니다.\n\n오류: ${error}\n\n파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.`);
             }
+          } else {
+            console.error('❌ Electron API를 사용할 수 없습니다');
+            setImagePreview(null);
+            setFileContent('❌ 이미지를 불러올 수 없습니다.\n\nElectron 환경이 필요합니다.');
           }
         } else if (documentExtensions.includes(ext)) {
           // 문서 파일 - 인덱싱된 내용 조회
@@ -769,6 +786,40 @@ export default function App() {
       setIsSummarizing(false);
     }
   };
+
+  // 텍스트 컨텍스트 메뉴 핸들러
+  const handleTextContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() || '';
+    
+    setTextContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      selectedText: selectedText
+    });
+  };
+
+  const handleCopyFromContextMenu = () => {
+    if (textContextMenu.selectedText) {
+      navigator.clipboard.writeText(textContextMenu.selectedText);
+      addSearchLog(`복사 완료: ${textContextMenu.selectedText.length}자`);
+    }
+    setTextContextMenu({ visible: false, x: 0, y: 0, selectedText: '' });
+  };
+
+  // 컨텍스트 메뉴 닫기 (화면 클릭 시)
+  useEffect(() => {
+    const handleClick = () => {
+      setContextMenu({ visible: false, x: 0, y: 0, target: null });
+      setTextContextMenu({ visible: false, x: 0, y: 0, selectedText: '' });
+    };
+    
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
+  }, []);
 
   // --- Directory Content Generator (The "Fake" File System) ---
   // 파일 크기 포맷팅
@@ -2126,7 +2177,11 @@ export default function App() {
                               
                               <div className="bg-[#1a1a1a] p-2 rounded border border-[#2a2a2a]">
                                 <div className="text-[10px] text-gray-500 mb-1">내용 미리보기:</div>
-                                <div className="text-[10px] text-gray-300 leading-relaxed whitespace-pre-wrap break-all select-text cursor-text" style={{ userSelect: 'text' }}>
+                                <div 
+                                  className="text-[10px] text-gray-300 leading-relaxed whitespace-pre-wrap break-all select-text cursor-text" 
+                                  style={{ userSelect: 'text' }}
+                                  onContextMenu={handleTextContextMenu}
+                                >
                                   {file.content_preview}
                                   {file.content_length > 200 && <span className="text-gray-500">...</span>}
                                 </div>
@@ -2192,7 +2247,11 @@ export default function App() {
                           📋 복사
                         </button>
                       </div>
-                      <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed select-text cursor-text" style={{ lineHeight: '1.8', userSelect: 'text' }}>
+                      <pre 
+                        className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed select-text cursor-text" 
+                        style={{ lineHeight: '1.8', userSelect: 'text' }}
+                        onContextMenu={handleTextContextMenu}
+                      >
                         {fileSummary}
                       </pre>
                     </div>
@@ -2213,7 +2272,11 @@ export default function App() {
                         📋 복사
                       </button>
                     </div>
-                    <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" style={{ userSelect: 'text' }}>
+                    <pre 
+                      className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" 
+                      style={{ userSelect: 'text' }}
+                      onContextMenu={handleTextContextMenu}
+                    >
                       {fileContent}
                     </pre>
                   </div>
@@ -2280,7 +2343,11 @@ export default function App() {
                                 📋 복사
                               </button>
                             </div>
-                            <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed select-text cursor-text" style={{ lineHeight: '1.8', userSelect: 'text' }}>
+                            <pre 
+                              className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed select-text cursor-text" 
+                              style={{ lineHeight: '1.8', userSelect: 'text' }}
+                              onContextMenu={handleTextContextMenu}
+                            >
                               {fileSummary}
                             </pre>
                           </div>
@@ -2319,7 +2386,11 @@ export default function App() {
                                 )}
                               </div>
                               <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded border border-[#2a2a2a] p-3">
-                                <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" style={{ userSelect: 'text' }}>
+                                <pre 
+                                  className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" 
+                                  style={{ userSelect: 'text' }}
+                                  onContextMenu={handleTextContextMenu}
+                                >
                                   {fileContent}
                                 </pre>
                               </div>
@@ -2461,6 +2532,31 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* 텍스트 컨텍스트 메뉴 */}
+      {textContextMenu.visible && (
+        <div
+          className="fixed bg-[#2a2a2a] border border-[#444] rounded shadow-lg py-1 z-[9999]"
+          style={{
+            left: `${textContextMenu.x}px`,
+            top: `${textContextMenu.y}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="w-full px-4 py-2 text-left text-sm text-gray-200 hover:bg-[#333] flex items-center gap-2 whitespace-nowrap"
+            onClick={handleCopyFromContextMenu}
+          >
+            <span>📋</span>
+            <span>복사하기</span>
+            {textContextMenu.selectedText && (
+              <span className="text-xs text-gray-500">
+                ({textContextMenu.selectedText.length}자)
+              </span>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
