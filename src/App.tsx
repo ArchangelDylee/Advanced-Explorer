@@ -1830,13 +1830,13 @@ export default function App() {
             </div>
 
             {/* Tree Area */}
-            <div className="flex-1 flex flex-col">
+            <div className="flex-1 flex flex-col min-h-0">
               {/* Favorites */}
-              <div style={{ height: layout.favoritesHeight }} className="flex flex-col border-b border-[#444]">
+              <div style={{ height: layout.favoritesHeight }} className="flex flex-col border-b border-[#444] min-h-0">
                 <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
                   <Star size={12} className="mr-1.5 text-[#A855F7]" fill="#A855F7"/> 즐겨찾기
                 </div>
-                <div className="flex-1 overflow-y-auto">
+                <div className="flex-1 overflow-y-auto min-h-0">
                   {FAVORITES.filter(fav => /^[a-zA-Z0-9가-힣]/.test(fav.name)).map((fav, i) => (
                     <TreeItem key={i} label={fav.name} IconComponent={fav.icon} isSelected={activeTab.selectedFolder === fav.name} onClick={() => navigate(fav.name, fav.path)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: fav.name, path: fav.path, type: 'folder' } }); }} />
                   ))}
@@ -1846,11 +1846,11 @@ export default function App() {
               <Resizer direction="vertical" onResize={(d) => setLayout(p => ({ ...p, favoritesHeight: Math.max(50, p.favoritesHeight + d) }))} />
               
               {/* Folder Tree */}
-              <div className="flex-1 flex flex-col">
+              <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex items-center px-2 py-1.5 text-xs font-bold text-[#D0D0D0] bg-[#2C2C2C] border-b border-[#444]">
                   <Folder size={12} className="mr-1.5 text-[#FBBF24]" fill="#FBBF24"/> 폴더 트리
                 </div>
-                <div className="flex-1 overflow-y-auto">{renderTree(folderStructure)}</div>
+                <div className="flex-1 overflow-y-auto min-h-0">{renderTree(folderStructure)}</div>
               </div>
             </div>
           </div>
