@@ -18,6 +18,8 @@ interface FileItem {
   type: string; // 'folder' | 'file' extension
   path?: string; // Full path for navigation
   indexed?: boolean; // 인덱싱 여부
+  skipped?: boolean; // Skip 여부
+  skipReason?: string; // Skip 사유
 }
 
 interface FolderNode {
@@ -312,7 +314,7 @@ export default function App() {
   const [colWidths, setColWidths] = useLocalStorage<ColWidthsState>('colWidths', { name: 350, size: 100, date: 150 });
   const [searchHistory, setSearchHistory] = useLocalStorage<string[]>('searchHistory', ['기획서', '2023년 정산']);
   const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true, subfolder: true });
-  const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, csv: true, etc: false });
+  const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, csv: true, etc: true });
   const [folderStructure, setFolderStructure] = useLocalStorage<FolderNode[]>('folderStructure', MOCK_FOLDERS_INITIAL);
 
   // Tabs (Multi-instance)
@@ -442,16 +444,19 @@ export default function App() {
         
         if (filePaths.length === 0) return;
         
-        // 인덱싱 상태 확인
-        const indexedStatus = await BackendAPI.checkFilesIndexed(filePaths);
+        // 인덱싱 상태 및 Skip 상태 확인
+        const status = await BackendAPI.checkFilesIndexed(filePaths);
         
-        // 파일 목록 업데이트 (인덱싱 상태만 변경)
+        // 파일 목록 업데이트 (인덱싱 상태 및 Skip 상태 변경)
         const updatedFiles = activeTab.files.map(item => {
           if (item.type !== 'folder' && item.path) {
-            const isIndexed = indexedStatus[item.path] || false;
+            const isIndexed = status.indexed[item.path] || false;
+            const isSkipped = item.path in status.skipped;
+            const skipReason = status.skipped[item.path];
+            
             // 상태가 변경된 경우에만 업데이트
-            if (item.indexed !== isIndexed) {
-              return { ...item, indexed: isIndexed };
+            if (item.indexed !== isIndexed || item.skipped !== isSkipped) {
+              return { ...item, indexed: isIndexed, skipped: isSkipped, skipReason };
             }
           }
           return item;
@@ -600,13 +605,22 @@ export default function App() {
         console.log('🔍 파일 선택됨:', activeTab.selectedFile.name, '확장자:', ext);
         
         const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico'];
-        const documentExtensions = ['txt', 'pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'hwp'];
+        const documentExtensions = [
+          // Office 문서
+          'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'hwp', 'hwpx',
+          // 웹/마크업
+          'html', 'htm', 'xml', 'json', 'md', 'csv',
+          // 코드 파일
+          'js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'php', 'rb', 'swift', 'kt',
+          // 설정/스크립트
+          'log', 'ini', 'cfg', 'yaml', 'yml', 'toml', 'sh', 'bat', 'ps1', 'sql'
+        ];
         
         if (imageExtensions.includes(ext)) {
-          // 이미지 파일 - 미리보기 로드
-          setFileContent(null);
+          // 이미지 파일 - 미리보기 + OCR 텍스트 로드
           if (typeof window !== 'undefined' && (window as any).electronAPI) {
             try {
+              // 이미지 미리보기 로드
               const electronAPI = (window as any).electronAPI;
               const result = await electronAPI.readImageFile(activeTab.selectedFile.path);
               
@@ -615,9 +629,23 @@ export default function App() {
               } else {
                 setImagePreview(null);
               }
+              
+              // OCR된 텍스트 로드 (인덱싱되어 있으면)
+              try {
+                const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                if (detail && detail.content) {
+                  setFileContent(detail.content);
+                } else {
+                  setFileContent('⚠️ OCR 텍스트가 없습니다.\n\n이미지가 인덱싱되지 않았거나\n텍스트를 인식할 수 없습니다.\n\n인덱싱을 시작하여 OCR을 수행하세요.');
+                }
+              } catch (error) {
+                console.error('이미지 OCR 텍스트 조회 오류:', error);
+                setFileContent('⚠️ OCR 텍스트를 불러올 수 없습니다.\n\n이미지를 인덱싱하면 텍스트를 추출할 수 있습니다.');
+              }
             } catch (error) {
               console.error('이미지 로드 오류:', error);
               setImagePreview(null);
+              setFileContent(null);
             }
           }
         } else if (documentExtensions.includes(ext)) {
@@ -936,28 +964,34 @@ export default function App() {
         return a.name.localeCompare(b.name);
       });
 
-      // 파일들의 인덱싱 여부 확인
+      // 파일들의 인덱싱 여부 및 Skip 상태 확인
       const filePaths = rawContent
         .filter(item => item.type !== 'folder' && item.path)
         .map(item => item.path!);
       
       if (filePaths.length > 0) {
         try {
-          const indexedStatus = await BackendAPI.checkFilesIndexed(filePaths);
+          const status = await BackendAPI.checkFilesIndexed(filePaths);
           
-          // 각 파일에 인덱싱 여부 추가
+          // 각 파일에 인덱싱 여부 및 Skip 상태 추가
           rawContent = rawContent.map(item => {
             if (item.type !== 'folder' && item.path) {
+              const isIndexed = status.indexed[item.path] || false;
+              const isSkipped = item.path in status.skipped;
+              const skipReason = status.skipped[item.path];
+              
               return {
                 ...item,
-                indexed: indexedStatus[item.path] || false
+                indexed: isIndexed,
+                skipped: isSkipped,
+                skipReason
               };
             }
             return item;
           });
         } catch (error) {
           console.error('인덱싱 여부 확인 오류:', error);
-          // 오류 발생 시 indexed 필드 없이 진행
+          // 오류 발생 시 indexed/skipped 필드 없이 진행
         }
       }
 
@@ -1175,7 +1209,49 @@ export default function App() {
                   status: log.status,
                   size: log.detail
                 }));
-                setIndexingLog(mappedLogs);
+                
+                // 디버그: Alpha Release 파일의 로그 확인
+                const alphaLogs = mappedLogs.filter(log => log.path.includes('Alpha Release'));
+                if (alphaLogs.length > 0) {
+                  console.log('📋 Alpha Release 로그:', alphaLogs.map(l => `${l.status} (${l.time})`));
+                }
+                
+                // 같은 파일은 상태만 업데이트 (새 라인 추가 안 함)
+                // 백엔드 로그에서 각 파일의 최신 상태만 유지
+                setIndexingLog(prev => {
+                  // 1단계: 백엔드 로그에서 각 파일의 최신 상태만 추출
+                  // 주의: 백엔드는 최신 로그를 맨 앞에 추가하므로 첫 번째 항목이 최신!
+                  const latestLogsMap = new Map<string, IndexLogEntry>();
+                  mappedLogs.forEach(log => {
+                    // 이미 존재하지 않을 때만 추가 (먼저 나온 것이 최신)
+                    if (!latestLogsMap.has(log.path)) {
+                      latestLogsMap.set(log.path, log);
+                    }
+                  });
+                  
+                  // 디버그: Alpha Release 최신 상태 확인
+                  const alphaLatest = Array.from(latestLogsMap.entries()).find(([path]) => path.includes('Alpha Release'));
+                  if (alphaLatest) {
+                    console.log('✅ Alpha Release 최신 상태:', alphaLatest[1].status);
+                  }
+                  
+                  // 2단계: 기존 로그 업데이트
+                  const updated: IndexLogEntry[] = [...prev];
+                  const pathMap = new Map(updated.map((entry, index) => [entry.path, index]));
+                  
+                  latestLogsMap.forEach((newLog, path) => {
+                    const existingIndex = pathMap.get(path);
+                    if (existingIndex !== undefined) {
+                      // 기존 항목 업데이트 (같은 위치에서 상태만 변경)
+                      updated[existingIndex] = newLog;
+                    } else {
+                      // 새 항목 추가 (맨 앞에)
+                      updated.unshift(newLog);
+                    }
+                  });
+                  
+                  return updated.slice(0, 1000); // 최대 1000개 유지
+                });
               }
             } catch (error) {
               if (error.name !== 'AbortError') {
@@ -1874,9 +1950,9 @@ export default function App() {
           <div style={{ width: layout.fileListWidth }} className="flex flex-col border-r border-[#444] bg-[#202020]">
             {/* Header */}
             <div className="flex h-8 bg-[#202020] border-b border-[#444] text-[#D0D0D0]">
-              <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center hover:bg-[#333] cursor-pointer text-xs border-r border-[#333333]" onClick={() => handleSort('name')}>이름 {activeTab.sortConfig.key === 'name' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center hover:bg-[#333] cursor-pointer text-xs border-r border-dotted border-[#333333]" onClick={() => handleSort('name')}>이름 {activeTab.sortConfig.key === 'name' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
               <Resizer direction="horizontal" onResize={(d) => setColWidths(p => ({ ...p, name: Math.max(50, p.name + d) }))} />
-              <div style={{ width: colWidths.size }} className="px-2 flex items-center justify-end hover:bg-[#333] cursor-pointer text-xs border-r border-[#333333]" onClick={() => handleSort('size')}>크기 {activeTab.sortConfig.key === 'size' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <div style={{ width: colWidths.size }} className="px-2 flex items-center justify-end hover:bg-[#333] cursor-pointer text-xs border-r border-dotted border-[#333333]" onClick={() => handleSort('size')}>크기 {activeTab.sortConfig.key === 'size' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
               <Resizer direction="horizontal" onResize={(d) => setColWidths(p => ({ ...p, size: Math.max(50, p.size + d) }))} />
               <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs flex-1" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
             </div>
@@ -1914,15 +1990,23 @@ export default function App() {
                       }}
                       onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: file.name, path: file.path || '', type: file.type } }); }}
                     >
-                      <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden border-r border-[#2a2a2a]">
+                      <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden border-r border-dotted border-[#2a2a2a]">
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
                         <span className="truncate">{file.name}</span>
                         {file.indexed !== undefined && (
                           <span 
                             className="ml-2 flex-shrink-0" 
-                            title={file.indexed ? "인덱싱 완료" : "인덱싱 안됨"}
+                            title={
+                              file.skipped 
+                                ? `인덱싱 실패: ${file.skipReason || '알 수 없는 이유'}` 
+                                : file.indexed 
+                                  ? "인덱싱 완료" 
+                                  : "인덱싱 안됨"
+                            }
                           >
-                            {file.indexed ? (
+                            {file.skipped ? (
+                              <span className="text-yellow-500 text-[10px] font-bold">?</span>
+                            ) : file.indexed ? (
                               <span className="text-green-400 text-[10px]">✓</span>
                             ) : (
                               <span className="text-gray-600 text-[10px]">○</span>
@@ -1934,7 +2018,7 @@ export default function App() {
                       {/* Resizer 공간 (4px - w-1과 동일) */}
                       <div className="w-1 h-full flex-shrink-0" />
                       
-                      <div style={{ width: colWidths.size }} className="px-2 text-right text-gray-400 border-r border-[#2a2a2a]">{file.size}</div>
+                      <div style={{ width: colWidths.size }} className="px-2 text-right text-gray-400 border-r border-dotted border-[#2a2a2a]">{file.size}</div>
                       
                       {/* Resizer 공간 (4px - w-1과 동일) */}
                       <div className="w-1 h-full flex-shrink-0" />
@@ -1957,9 +2041,27 @@ export default function App() {
                   if (!showIndexingLog) {
                     // 인덱싱 보기로 전환 시 DB 조회
                     try {
-                      const dbResponse = await BackendAPI.getIndexedDatabase(1000, 0);
-                      setIndexedDatabase(dbResponse.files);
-                      setDbTotalCount(dbResponse.total_count);
+                      // 선택한 파일이 있으면 해당 파일만, 없으면 전체 조회
+                      if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
+                        const fileDetail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                        if (fileDetail) {
+                          // 선택한 파일의 정보를 배열로 변환하여 표시
+                          setIndexedDatabase([{
+                            path: fileDetail.path,
+                            content_length: fileDetail.content_length,
+                            mtime: fileDetail.mtime
+                          }]);
+                          setDbTotalCount(1);
+                        } else {
+                          setIndexedDatabase([]);
+                          setDbTotalCount(0);
+                          addSearchLog('선택한 파일이 인덱싱되지 않았습니다');
+                        }
+                      } else {
+                        const dbResponse = await BackendAPI.getIndexedDatabase(1000, 0);
+                        setIndexedDatabase(dbResponse.files);
+                        setDbTotalCount(dbResponse.total_count);
+                      }
                     } catch (error) {
                       console.error('DB 조회 오류:', error);
                       addSearchLog('DB 조회 실패');
@@ -1978,10 +2080,16 @@ export default function App() {
                 <div className="space-y-2">
                   <div className="flex justify-between items-center mb-3 pb-2 border-b border-[#444]">
                     <span className="text-sm font-bold text-[#0078D7]">
-                      인덱싱 DB 조회 결과 (총 {dbTotalCount.toLocaleString()}개)
+                      {activeTab.selectedFile && activeTab.selectedFile.type !== 'folder' 
+                        ? `인덱싱 DB 조회 결과 (선택한 파일: ${activeTab.selectedFile.name})`
+                        : `인덱싱 DB 조회 결과 (전체: ${dbTotalCount.toLocaleString()}개)`
+                      }
                     </span>
                     <span className="text-[10px] text-gray-500">
-                      SELECT * FROM files_fts ORDER BY mtime DESC LIMIT 1000
+                      {activeTab.selectedFile && activeTab.selectedFile.type !== 'folder'
+                        ? `SELECT * FROM files_fts WHERE path = '${activeTab.selectedFile.name}'`
+                        : 'SELECT * FROM files_fts ORDER BY mtime DESC LIMIT 1000'
+                      }
                     </span>
                   </div>
                   
@@ -2018,7 +2126,7 @@ export default function App() {
                               
                               <div className="bg-[#1a1a1a] p-2 rounded border border-[#2a2a2a]">
                                 <div className="text-[10px] text-gray-500 mb-1">내용 미리보기:</div>
-                                <div className="text-[10px] text-gray-300 leading-relaxed whitespace-pre-wrap break-all">
+                                <div className="text-[10px] text-gray-300 leading-relaxed whitespace-pre-wrap break-all select-text cursor-text" style={{ userSelect: 'text' }}>
                                   {file.content_preview}
                                   {file.content_length > 200 && <span className="text-gray-500">...</span>}
                                 </div>
@@ -2068,11 +2176,23 @@ export default function App() {
                   {/* 요약 결과 표시 */}
                   {fileSummary && (
                     <div className="bg-[#1a3a1a] border border-green-800 rounded p-3 mb-2">
-                      <div className="flex items-center gap-2 mb-2 text-green-400 text-xs font-bold">
-                        <FileText size={12} />
-                        <span>📝 AI 요약 (TextRank)</span>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 text-green-400 text-xs font-bold">
+                          <FileText size={12} />
+                          <span>📝 AI 요약 (TextRank)</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(fileSummary);
+                            addSearchLog('요약 내용 복사 완료');
+                          }}
+                          className="flex items-center gap-1 px-2 py-1 text-[10px] bg-green-700 hover:bg-green-600 text-white rounded transition-colors"
+                          title="요약 복사"
+                        >
+                          📋 복사
+                        </button>
                       </div>
-                      <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed" style={{ lineHeight: '1.8' }}>
+                      <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed select-text cursor-text" style={{ lineHeight: '1.8', userSelect: 'text' }}>
                         {fileSummary}
                       </pre>
                     </div>
@@ -2080,8 +2200,20 @@ export default function App() {
                   
                   {/* 전체 내용 */}
                   <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded p-3">
-                    <div className="text-[10px] text-gray-500 mb-2">전체 내용:</div>
-                    <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-[10px] text-gray-500">전체 내용:</div>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(fileContent);
+                          addSearchLog('전체 내용 복사 완료');
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 text-[10px] bg-[#333] hover:bg-[#444] text-gray-300 rounded transition-colors"
+                        title="전체 내용 복사"
+                      >
+                        📋 복사
+                      </button>
+                    </div>
+                    <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" style={{ userSelect: 'text' }}>
                       {fileContent}
                     </pre>
                   </div>
@@ -2096,18 +2228,103 @@ export default function App() {
                     ) : imagePreview ? (
                       <div className="h-full flex flex-col gap-2 p-3 bg-[#151515] border border-[#333] rounded">
                         <div className="text-sm text-gray-400 border-b border-[#333] pb-2">
-                          <div className="font-bold">{activeTab.selectedFile.name}</div>
-                          <div className="text-xs mt-1">
-                            크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="font-bold">{activeTab.selectedFile.name}</div>
+                              <div className="text-xs mt-1">
+                                크기: {activeTab.selectedFile.size} | 수정: {activeTab.selectedFile.date}
+                              </div>
+                            </div>
+                            {fileContent && !fileContent.includes('⚠️') && (
+                              <button
+                                onClick={handleSummarize}
+                                disabled={isSummarizing}
+                                className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                                  isSummarizing 
+                                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                                    : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                                }`}
+                              >
+                                {isSummarizing ? (
+                                  <>
+                                    <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                                    요약 중...
+                                  </>
+                                ) : (
+                                  <>
+                                    <FileText size={12} />
+                                    OCR 요약
+                                  </>
+                                )}
+                              </button>
+                            )}
                           </div>
                         </div>
-                        <div className="flex-1 overflow-auto flex items-center justify-center bg-[#1a1a1a] rounded">
-                          <img 
-                            src={imagePreview} 
-                            alt={activeTab.selectedFile.name}
-                            className="max-w-full max-h-full object-contain"
-                            style={{ imageRendering: 'auto' }}
-                          />
+                        
+                        {/* 요약 결과 표시 */}
+                        {fileSummary && (
+                          <div className="bg-[#1a3a1a] border border-green-800 rounded p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2 text-green-400 text-xs font-bold">
+                                <FileText size={12} />
+                                <span>📝 OCR 텍스트 요약</span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(fileSummary);
+                                  addSearchLog('OCR 요약 복사 완료');
+                                }}
+                                className="flex items-center gap-1 px-2 py-1 text-[10px] bg-green-700 hover:bg-green-600 text-white rounded transition-colors"
+                                title="요약 복사"
+                              >
+                                📋 복사
+                              </button>
+                            </div>
+                            <pre className="text-xs text-green-200 whitespace-pre-wrap font-mono leading-relaxed select-text cursor-text" style={{ lineHeight: '1.8', userSelect: 'text' }}>
+                              {fileSummary}
+                            </pre>
+                          </div>
+                        )}
+                        
+                        <div className="flex-1 overflow-auto grid grid-cols-2 gap-2">
+                          {/* 이미지 미리보기 */}
+                          <div className="flex flex-col gap-2">
+                            <div className="text-xs text-gray-500">이미지 미리보기:</div>
+                            <div className="flex-1 overflow-auto flex items-center justify-center bg-[#1a1a1a] rounded border border-[#2a2a2a]">
+                              <img 
+                                src={imagePreview} 
+                                alt={activeTab.selectedFile.name}
+                                className="max-w-full max-h-full object-contain"
+                                style={{ imageRendering: 'auto' }}
+                              />
+                            </div>
+                          </div>
+                          
+                          {/* OCR 텍스트 */}
+                          {fileContent && (
+                            <div className="flex flex-col gap-2">
+                              <div className="flex items-center justify-between">
+                                <div className="text-xs text-gray-500">OCR 추출 텍스트:</div>
+                                {!fileContent.includes('⚠️') && (
+                                  <button
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(fileContent);
+                                      addSearchLog('OCR 텍스트 복사 완료');
+                                    }}
+                                    className="flex items-center gap-1 px-2 py-1 text-[10px] bg-[#333] hover:bg-[#444] text-gray-300 rounded transition-colors"
+                                    title="OCR 텍스트 복사"
+                                  >
+                                    📋 복사
+                                  </button>
+                                )}
+                              </div>
+                              <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded border border-[#2a2a2a] p-3">
+                                <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" style={{ userSelect: 'text' }}>
+                                  {fileContent}
+                                </pre>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
@@ -2214,7 +2431,7 @@ export default function App() {
                         {log.status === 'Info' ? '📋' : 
                          log.status === 'Success' ? '✓ 완료' : 
                          log.status === '파싱완료' ? '✓ 파싱' :
-                         log.status === 'Error' ? '✗' : 
+                         log.status === 'Error' ? '✗ 오류 파일' : 
                          log.status === 'Indexing' ? '⟳ 처리중' : 
                          log.status}
                       </span>

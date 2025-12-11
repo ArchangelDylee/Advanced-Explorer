@@ -436,7 +436,7 @@ def get_indexed_file_detail(file_path):
 @app.route('/api/indexing/check-files', methods=['POST'])
 def check_files_indexed():
     """
-    여러 파일의 인덱싱 여부를 일괄 확인
+    여러 파일의 인덱싱 여부 및 Skip 상태를 일괄 확인
     
     Request Body:
         {
@@ -445,9 +445,15 @@ def check_files_indexed():
     
     Response:
         {
-            "C:\\path\\to\\file1.txt": true,
-            "C:\\path\\to\\file2.docx": false,
-            ...
+            "indexed": {
+                "C:\\path\\to\\file1.txt": true,
+                "C:\\path\\to\\file2.docx": false,
+                ...
+            },
+            "skipped": {
+                "C:\\path\\to\\file3.txt": "파일 손상 또는 암호화됨",
+                ...
+            }
         }
     """
     try:
@@ -455,15 +461,22 @@ def check_files_indexed():
         paths = data.get('paths', [])
         
         if not paths:
-            return jsonify({}), 200
+            return jsonify({'indexed': {}, 'skipped': {}})
         
         # 각 파일의 인덱싱 여부 확인
-        result = {}
+        indexed_result = {}
+        skipped_result = {}
+        
         for path in paths:
             is_indexed = db_manager.is_file_indexed(path)
-            result[path] = is_indexed
+            indexed_result[path] = is_indexed
+            
+            # Skip 여부 확인
+            with indexer.skipped_files_lock:
+                if path in indexer.skipped_files:
+                    skipped_result[path] = indexer.skipped_files[path].get('reason', 'Unknown')
         
-        return jsonify(result)
+        return jsonify({'indexed': indexed_result, 'skipped': skipped_result})
     except Exception as e:
         logger.error(f"파일 인덱싱 여부 확인 오류: {e}")
         return jsonify({'error': str(e)}), 500

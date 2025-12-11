@@ -8,8 +8,21 @@ from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.text_rank import TextRankSummarizer
 from sumy.nlp.stemmers import Stemmer
+import nltk
+import os
 
 logger = logging.getLogger(__name__)
+
+# NLTK 데이터 자동 다운로드
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    logger.info("NLTK punkt tokenizer 다운로드 중...")
+    try:
+        nltk.download('punkt', quiet=True)
+        logger.info("✓ NLTK punkt tokenizer 다운로드 완료")
+    except Exception as e:
+        logger.warning(f"NLTK punkt 다운로드 실패: {e}")
 
 class ContentSummarizer:
     """TextRank 기반 내용 요약"""

@@ -178,7 +178,7 @@ for handler in logging.root.handlers:
 logger = logging.getLogger(__name__)
 
 # 상수 정의
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 PARSE_TIMEOUT = 60  # 60초
 
 
@@ -344,9 +344,9 @@ class FileIndexer:
                                   '.java', '.cpp', '.c', '.h', '.cs', '.json', '.xml', '.html', 
                                   '.css', '.sql', '.sh', '.bat', '.ps1', '.yaml', '.yml'}
     
-    SUPPORTED_DOC_EXTENSIONS = {'.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.csv', '.pdf', '.hwp'}
+    SUPPORTED_DOC_EXTENSIONS = {'.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.csv', '.pdf', '.hwp', '.hwpx'}
     
-    SUPPORTED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}  # OCR 지원
+    SUPPORTED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.svg'}  # OCR 지원 (svg는 XML 텍스트)
     
     # 제외할 폴더 패턴
     EXCLUDED_DIRS = {
@@ -607,27 +607,38 @@ class FileIndexer:
             with open(self.skipcheck_file, 'a', encoding='utf-8') as f:
                 f.write(log_line)
             
-            # 통합 로그에도 기록
-            self._write_indexing_log('Skip', path, reason)
+            # 파일 손상, 암호화, 처리 실패 등은 'Error' 상태로 기록
+            error_keywords = ['손상', '암호화', '처리 실패', 'corrupt', 'encrypted', 'not a zip file', 
+                             'bad zipfile', 'invalid', '비어있', '텍스트 없음']
+            status = 'Error' if any(keyword in reason.lower() for keyword in error_keywords) else 'Skip'
             
-            # 재시도 가능한 오류인 경우 목록에 추가
+            # 통합 로그에도 기록
+            self._write_indexing_log(status, path, reason)
+            
+            # 모든 Skip/Error를 skipped_files에 추가 (UI에서 ? 마킹용)
+            with self.skipped_files_lock:
+                if path not in self.skipped_files:
+                    self.skipped_files[path] = {
+                        'reason': reason,
+                        'time': time.time(),
+                        'retry_count': 0,
+                        'status': status  # 'Skip' 또는 'Error'
+                    }
+            
+            # 재시도 가능한 오류인지 확인 (재시도 워커용)
             retryable_reasons = [
                 'File locked', 'Permission denied', 'Parsing timeout',
                 'Password protected',  # 사용자가 암호 해제할 수 있음
-                'File is open'  # 사용자가 파일을 닫으면 재시도
+                'File is open',  # 사용자가 파일을 닫으면 재시도
+                '파일 접근 불가'
             ]
             
-            if any(retryable in reason for retryable in retryable_reasons):
-                with self.skipped_files_lock:
-                    if path not in self.skipped_files:
-                        self.skipped_files[path] = {
-                            'reason': reason,
-                            'time': time.time(),
-                            'retry_count': 0
-                        }
+            # 재시도 불가능한 에러면 플래그 설정
+            if status == 'Error' and not any(retryable in reason for retryable in retryable_reasons):
+                self.skipped_files[path]['retryable'] = False
             
             # 메모리에 로그 추가
-            self._add_log_to_memory('Skip', path, reason)
+            self._add_log_to_memory(status, path, reason)
             
             # UI 로그 콜백
             if self.log_callback:
@@ -1778,6 +1789,14 @@ class FileIndexer:
             elif ext == '.hwp':
                 return self._extract_hwp(file_path)
             
+            # HWPX (한글 2014 이상 - XML 기반)
+            elif ext == '.hwpx':
+                return self._extract_hwpx(file_path)
+            
+            # SVG (XML 기반 벡터 이미지 - 텍스트로 처리)
+            elif ext == '.svg':
+                return self._extract_text_file(file_path)
+            
             # 이미지 파일 (OCR)
             elif ext in self.SUPPORTED_IMAGE_EXTENSIONS and TESSERACT_AVAILABLE:
                 return self._extract_image_ocr(file_path)
@@ -1870,6 +1889,12 @@ class FileIndexer:
             doc = docx.Document(temp_file)
             text = '\n'.join([para.text for para in doc.paragraphs])
             
+            # 추출된 텍스트 확인
+            if not text.strip():
+                logger.info(f"⚠️ DOCX 파일에 텍스트 없음 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 비어있거나 텍스트 없음")
+                return None
+            
             logger.debug(f"✅ DOCX 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
             
             return text[:100000]
@@ -1880,15 +1905,17 @@ class FileIndexer:
             
             # 암호화/손상된 파일 = 영구 Skip (재시도 X)
             if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'bad zipfile']):
-                logger.info(f"⛔ DOCX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
-                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+                logger.warning(f"⛔ DOCX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename} | 오류: {str(e)[:100]}")
+                self._log_skip(file_path, f"파일 손상 또는 암호화됨: {str(e)[:80]}")
             # 접근 불가 파일 = 나중에 재시도
             elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
                 logger.info(f"⛔ DOCX 파일 접근 불가 - 나중에 재시도: {filename}")
                 self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
                 self._add_to_retry_queue(file_path, "파일 접근 불가")
             else:
-                logger.debug(f"DOCX 추출 오류 [{filename}]: {e}")
+                # 기타 모든 에러도 명확하게 로그에 기록
+                logger.warning(f"⚠️ DOCX 추출 실패 [{filename}]: {str(e)[:100]}")
+                self._log_skip(file_path, f"처리 실패: {str(e)[:80]}")
             return None
             
         finally:
@@ -1921,9 +1948,16 @@ class FileIndexer:
                     if hasattr(shape, "text"):
                         text_parts.append(shape.text)
             
+            # 추출된 텍스트 확인
+            extracted_text = '\n'.join(text_parts)
+            if not extracted_text.strip():
+                logger.info(f"⚠️ PPTX 파일에 텍스트 없음 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 비어있거나 텍스트 없음")
+                return None
+            
             logger.debug(f"✅ PPTX 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
             
-            return '\n'.join(text_parts)[:100000]
+            return extracted_text[:100000]
             
         except Exception as e:
             error_msg = str(e).lower()
@@ -1931,15 +1965,17 @@ class FileIndexer:
             
             # 암호화/손상된 PPTX = 영구 Skip
             if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'bad zipfile']):
-                logger.info(f"⛔ PPTX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
-                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+                logger.warning(f"⛔ PPTX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename} | 오류: {str(e)[:100]}")
+                self._log_skip(file_path, f"파일 손상 또는 암호화됨: {str(e)[:80]}")
             # 접근 불가 = 재시도
             elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
                 logger.info(f"⛔ PPTX 파일 접근 불가 - 나중에 재시도: {filename}")
                 self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
                 self._add_to_retry_queue(file_path, "파일 접근 불가")
             else:
-                logger.debug(f"PPTX 추출 오류 [{filename}]: {e}")
+                # 기타 모든 에러도 명확하게 로그에 기록
+                logger.warning(f"⚠️ PPTX 추출 실패 [{filename}]: {str(e)[:100]}")
+                self._log_skip(file_path, f"처리 실패: {str(e)[:80]}")
             return None
             
         finally:
@@ -2119,9 +2155,16 @@ class FileIndexer:
             
             workbook.close()
             
+            # 추출된 텍스트 확인
+            extracted_text = ' '.join(text_parts)
+            if not extracted_text.strip():
+                logger.info(f"⚠️ XLSX 파일에 텍스트 없음 - Skip: {os.path.basename(file_path)}")
+                self._log_skip(file_path, "파일이 비어있거나 텍스트 없음")
+                return None
+            
             logger.debug(f"✅ XLSX 파일 인덱싱 완료 (임시 복사본): {os.path.basename(file_path)}")
             
-            return ' '.join(text_parts)[:100000]
+            return extracted_text[:100000]
             
         except Exception as e:
             error_msg = str(e).lower()
@@ -2129,15 +2172,17 @@ class FileIndexer:
             
             # 암호화/손상된 Excel = 영구 Skip
             if any(keyword in error_msg for keyword in ['password', 'encrypted', 'protected', 'corrupt', 'invalid', 'bad zipfile']):
-                logger.info(f"⛔ XLSX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename}")
-                self._log_skip(file_path, f"인덱싱 불가능 (암호화/손상): {str(e)[:80]}")
+                logger.warning(f"⛔ XLSX 인덱싱 불가 (암호화/손상) - 영구 Skip: {filename} | 오류: {str(e)[:100]}")
+                self._log_skip(file_path, f"파일 손상 또는 암호화됨: {str(e)[:80]}")
             # 접근 불가 = 재시도
             elif 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
                 logger.info(f"⛔ XLSX 파일 접근 불가 - 나중에 재시도: {filename}")
                 self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
                 self._add_to_retry_queue(file_path, "파일 접근 불가")
             else:
-                logger.debug(f"XLSX 추출 오류 [{filename}]: {e}")
+                # 기타 모든 에러도 명확하게 로그에 기록
+                logger.warning(f"⚠️ XLSX 추출 실패 [{filename}]: {str(e)[:100]}")
+                self._log_skip(file_path, f"처리 실패: {str(e)[:80]}")
             return None
             
         finally:
@@ -2405,18 +2450,10 @@ class FileIndexer:
                     logger.warning(f"⚠️ PDF 페이지 {page_num + 1} 추출 오류: {page_error}")
                     continue
             
-            doc.close()
-            
             extracted_text = '\n'.join(text_parts)
             
             if extracted_text.strip():
                 logger.info(f"✅ PDF 파일 인덱싱 완료 (PyMuPDF, PDF 프로그램 불필요): {filename} ({len(extracted_text)}자, {max_pages}페이지)")
-                doc.close()
-                
-                # 임시 파일 정리
-                if temp_file:
-                    self._cleanup_temp(temp_file)
-                
                 return extracted_text[:100000]
             else:
                 # 텍스트가 없음 - OCR 시도
@@ -2427,7 +2464,7 @@ class FileIndexer:
                         ocr_text_parts = []
                         
                         # 각 페이지를 이미지로 변환하여 OCR
-                        for page_num in range(min(len(doc), 20)):  # 최대 20페이지까지만 OCR (시간 절약)
+                        for page_num in range(min(page_count, 20)):  # 최대 20페이지까지만 OCR (시간 절약)
                             try:
                                 page = doc[page_num]
                                 
@@ -2452,11 +2489,6 @@ class FileIndexer:
                         if ocr_text_parts:
                             ocr_result = '\n'.join(ocr_text_parts)
                             logger.info(f"✅ PDF OCR 완료: {filename} ({len(ocr_result)}자, {len(ocr_text_parts)}페이지)")
-                            
-                            # 임시 파일 정리
-                            if temp_file:
-                                self._cleanup_temp(temp_file)
-                            
                             return ocr_result[:100000]
                         else:
                             logger.warning(f"⚠️ PDF OCR 실패 (텍스트 추출 안됨): {filename}")
@@ -2467,11 +2499,7 @@ class FileIndexer:
                         logger.error(f"❌ PDF OCR 오류: {ocr_error}")
                         self._log_skip(file_path, f"OCR 오류: {str(ocr_error)[:80]}")
                         return None
-                    
-                    finally:
-                        doc.close()  # finally에서만 한 번 close
                 else:
-                    doc.close()
                     logger.warning(f"⚠️ PDF 텍스트 없음, OCR 불가 (Tesseract 미설치): {filename}")
                     self._log_skip(file_path, "텍스트 없음 - OCR 라이브러리 필요 (pytesseract)")
                     return None
@@ -2496,7 +2524,13 @@ class FileIndexer:
             return None
             
         finally:
-            # 3단계: 임시 파일 정리
+            # 3단계: PDF 문서 및 임시 파일 정리
+            try:
+                if 'doc' in locals():
+                    doc.close()
+            except:
+                pass
+            
             if temp_file:
                 self._cleanup_temp(temp_file)
     
@@ -2731,6 +2765,107 @@ class FileIndexer:
         
         return None
     
+    def _extract_hwpx(self, file_path: str) -> Optional[str]:
+        """
+        HWPX 파일에서 텍스트 추출 (한글 2014 이상 - XML 기반)
+        
+        HWPX는 ZIP 압축된 XML 파일들로 구성됨 (.docx와 유사한 구조)
+        - Contents/section*.xml: 본문 텍스트
+        - 한글 프로그램 설치 불필요!
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        """
+        import zipfile
+        import xml.etree.ElementTree as ET
+        
+        temp_file = None
+        filename = os.path.basename(file_path)
+        
+        try:
+            # 1단계: 원본 파일을 임시 폴더에 복사
+            temp_file = self._copy_to_temp(file_path)
+            
+            if not temp_file:
+                logger.info(f"⛔ HWPX 파일 복사 실패 (사용 중) - Skip: {filename}")
+                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                return None
+            
+            # 2단계: ZIP 파일 열기 및 XML 파싱
+            logger.debug(f"📄 HWPX 파일 열기 시도: {filename}")
+            
+            text_parts = []
+            
+            with zipfile.ZipFile(temp_file, 'r') as zip_ref:
+                # Contents 폴더 내의 section*.xml 파일들 찾기
+                file_list = zip_ref.namelist()
+                section_files = [f for f in file_list if f.startswith('Contents/section') and f.endswith('.xml')]
+                section_files.sort()  # 순서대로 정렬
+                
+                logger.debug(f"📄 HWPX 섹션 파일 개수: {len(section_files)}")
+                
+                for section_file in section_files:
+                    try:
+                        with zip_ref.open(section_file) as xml_file:
+                            # XML 파싱
+                            tree = ET.parse(xml_file)
+                            root = tree.getroot()
+                            
+                            # 모든 텍스트 노드 추출 (재귀적으로)
+                            for elem in root.iter():
+                                if elem.text and elem.text.strip():
+                                    text_parts.append(elem.text.strip())
+                                if elem.tail and elem.tail.strip():
+                                    text_parts.append(elem.tail.strip())
+                    
+                    except Exception as section_error:
+                        logger.debug(f"⚠️ HWPX 섹션 파일 파싱 오류 ({section_file}): {section_error}")
+                        continue
+            
+            extracted_text = '\n'.join(text_parts)
+            
+            if extracted_text.strip():
+                logger.info(f"✅ HWPX 파일 인덱싱 완료 (ZIP/XML, 한글 프로그램 불필요): {filename} ({len(extracted_text)}자)")
+                
+                # 임시 파일 정리
+                if temp_file:
+                    self._cleanup_temp(temp_file)
+                
+                return extracted_text[:100000]
+            else:
+                logger.warning(f"⚠️ HWPX 파일에서 텍스트를 추출할 수 없음: {filename}")
+                self._log_skip(file_path, "HWPX 파일에 텍스트 없음")
+                
+                # 임시 파일 정리
+                if temp_file:
+                    self._cleanup_temp(temp_file)
+                
+                return None
+        
+        except zipfile.BadZipFile:
+            logger.error(f"❌ HWPX 파일이 손상되었거나 유효하지 않음: {filename}")
+            self._log_skip(file_path, "손상된 HWPX 파일")
+            
+            # 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
+            
+            return None
+        
+        except Exception as e:
+            logger.error(f"❌ HWPX 추출 오류 [{filename}]: {type(e).__name__} - {str(e)}")
+            self._log_skip(file_path, f"HWPX 추출 오류: {str(e)[:80]}")
+            
+            # 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
+            
+            return None
+        
+        finally:
+            # 최종 임시 파일 정리
+            if temp_file:
+                self._cleanup_temp(temp_file)
+    
     def _extract_image_ocr(self, file_path: str) -> Optional[str]:
         """
         이미지 파일에서 OCR로 텍스트 추출
@@ -2853,11 +2988,18 @@ class FileIndexer:
                     'indexed': False
                 }
             
-            # 인덱싱 가능한 파일인지 확인
-            if not self._should_index(file_path):
+            # 인덱싱 가능한 파일인지 확인 (확장자 체크)
+            ext = os.path.splitext(file_path)[1].lower()
+            supported_exts = (
+                SUPPORTED_TEXT_EXTENSIONS + 
+                SUPPORTED_DOC_EXTENSIONS + 
+                SUPPORTED_IMAGE_EXTENSIONS
+            )
+            
+            if ext not in supported_exts:
                 return {
                     'success': False,
-                    'message': '지원하지 않는 파일 형식이거나 제외된 파일입니다',
+                    'message': f'지원하지 않는 파일 형식입니다 ({ext})',
                     'indexed': False
                 }
             
@@ -2956,6 +3098,13 @@ class FileIndexer:
             for file_path in files_to_retry:
                 if self.retry_stop_flag.is_set():
                     break
+                
+                # 재시도 불가능한 에러는 건너뜀
+                with self.skipped_files_lock:
+                    if file_path in self.skipped_files:
+                        if not self.skipped_files[file_path].get('retryable', True):
+                            logger.debug(f"재시도 불가능한 에러 - 건너뜀: {file_path}")
+                            continue
                 
                 # 사용자 활동 체크 (재시도 워커에도 적용)
                 if self.activity_monitor and self.enable_activity_monitor:

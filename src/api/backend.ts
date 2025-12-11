@@ -486,9 +486,12 @@ export async function summarizeFile(filePath: string, sentencesCount: number = 5
 // ============== 인덱싱 확인 API ==============
 
 /**
- * 여러 파일의 인덱싱 여부 확인
+ * 여러 파일의 인덱싱 여부 및 Skip 상태 확인
  */
-export async function checkFilesIndexed(paths: string[]): Promise<Record<string, boolean>> {
+export async function checkFilesIndexed(paths: string[]): Promise<{
+  indexed: Record<string, boolean>;
+  skipped: Record<string, string>;
+}> {
   try {
     const response = await fetch(`${API_BASE_URL}/indexing/check-files`, {
       method: 'POST',
@@ -502,7 +505,7 @@ export async function checkFilesIndexed(paths: string[]): Promise<Record<string,
     return await response.json();
   } catch (error) {
     console.error('파일 인덱싱 여부 확인 오류:', error);
-    return {};
+    return { indexed: {}, skipped: {} };
   }
 }
 
