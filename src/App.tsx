@@ -5,7 +5,7 @@ import {
   ChevronRight, ChevronDown, Image as ImageIcon,
   ArrowUp, ArrowDown, Clock, X, Plus,
   FileSpreadsheet, FileCode, FileArchive, LayoutTemplate,
-  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity
+  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity, RefreshCw
 } from 'lucide-react';
 import * as BackendAPI from './api/backend';
 
@@ -1332,6 +1332,18 @@ export default function App() {
     addSearchLog(`붙여넣기: ${name}`);
   };
 
+  const handleRefresh = async () => {
+    if (!activeTab.currentPath) return;
+    try {
+      addSearchLog('📁 파일 목록 새로고침 중...');
+      await navigate(activeTab.selectedFolder || '현재 폴더', activeTab.currentPath);
+      addSearchLog('✅ 새로고침 완료');
+    } catch (err) {
+      console.error('새로고침 실패:', err);
+      addSearchLog('❌ 새로고침 실패');
+    }
+  };
+
   const handleRename = () => {
     if (!activeTab.selectedFile) return;
     const oldName = activeTab.selectedFile.name;
@@ -1826,6 +1838,7 @@ export default function App() {
                 <button onClick={handleRename} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="이름 변경"><Edit2 size={16}/></button>
                 <button onClick={handleDelete} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333] hover:text-red-400' : 'text-[#555]'}`} title="삭제"><Trash2 size={16}/></button>
                 <button onClick={handlePaste} disabled={!clipboard} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${clipboard ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="붙여넣기"><Clipboard size={16}/></button>
+                <button onClick={handleRefresh} className="p-1.5 text-[#D0D0D0] rounded hover:bg-[#333] active:bg-[#444] active:scale-95 transition-transform duration-100" title="새로고침"><RefreshCw size={16}/></button>
               </div>
             </div>
 
