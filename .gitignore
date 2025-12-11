@@ -21,6 +21,7 @@ Thumbs.db
 out/
 
 # Python
+venv/
 python-backend/venv/
 python-backend/__pycache__/
 python-backend/*.pyc
@@ -32,6 +33,9 @@ python-backend/ENV/
 python-backend/file_index.db
 python-backend/test_index.db
 python-backend/*.db
+python-backend/*.db-shm
+python-backend/*.db-wal
 python-backend/logs/
+python-backend/check_db.py
 
 

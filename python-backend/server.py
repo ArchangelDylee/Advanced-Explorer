@@ -264,6 +264,48 @@ def stop_indexing():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/indexing/single-file', methods=['POST'])
+def index_single_file():
+    """
+    단일 파일 인덱싱 (우클릭 메뉴용)
+    
+    Request Body:
+        {
+            "file_path": "C:\\path\\to\\file.txt"
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "message": "인덱싱 완료 (1234자, 567토큰)",
+            "indexed": true,
+            "char_count": 1234,
+            "token_count": 567
+        }
+    """
+    try:
+        data = request.get_json()
+        file_path = data.get('file_path')
+        
+        if not file_path:
+            return jsonify({
+                'success': False,
+                'message': '파일 경로가 필요합니다'
+            }), 400
+        
+        # 단일 파일 인덱싱 실행
+        result = indexer.index_single_file(file_path)
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        logger.error(f"단일 파일 인덱싱 API 오류: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'서버 오류: {str(e)}'
+        }), 500
+
+
 @app.route('/api/indexing/status', methods=['GET'])
 def indexing_status():
     """인덱싱 상태 조회"""

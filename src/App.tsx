@@ -341,16 +341,15 @@ export default function App() {
   const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
   const [indexingStatus, setIndexingStatus] = useState<string>('대기 중...');
+  const [indexingStats, setIndexingStats] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   
+  // AbortController refs for cancelling pending requests
+  const statusAbortControllerRef = React.useRef<AbortController | null>(null);
+  const logsAbortControllerRef = React.useRef<AbortController | null>(null);
+  const statsAbortControllerRef = React.useRef<AbortController | null>(null);
+  
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
-
-  // Initialize to Documents folder on first load
-  useEffect(() => {
-    const documentsPath = `${userHome}\\Documents`;
-    // 초기 로드 시 문서 폴더로 이동
-    navigate('문서', documentsPath);
-  }, []); // 빈 의존성 배열로 컴포넌트 마운트 시 한 번만 실행
 
   // Initialize DB statistics
   useEffect(() => {
@@ -431,6 +430,61 @@ export default function App() {
     
     return () => clearInterval(dbRefreshInterval);
   }, [showIndexingLog]);
+
+  // Real-time update of file indexing status during indexing
+  useEffect(() => {
+    const updateFileIndexingStatus = async () => {
+      try {
+        // 현재 탭의 파일들 중 폴더가 아닌 파일들의 경로 가져오기
+        const filePaths = activeTab.files
+          .filter(item => item.type !== 'folder' && item.path)
+          .map(item => item.path!);
+        
+        if (filePaths.length === 0) return;
+        
+        // 인덱싱 상태 확인
+        const indexedStatus = await BackendAPI.checkFilesIndexed(filePaths);
+        
+        // 파일 목록 업데이트 (인덱싱 상태만 변경)
+        const updatedFiles = activeTab.files.map(item => {
+          if (item.type !== 'folder' && item.path) {
+            const isIndexed = indexedStatus[item.path] || false;
+            // 상태가 변경된 경우에만 업데이트
+            if (item.indexed !== isIndexed) {
+              return { ...item, indexed: isIndexed };
+            }
+          }
+          return item;
+        });
+        
+        // 실제로 변경된 항목이 있을 때만 업데이트
+        if (JSON.stringify(updatedFiles) !== JSON.stringify(activeTab.files)) {
+          updateActiveTab({ files: updatedFiles });
+        }
+      } catch (error) {
+        console.error('파일 인덱싱 상태 업데이트 오류:', error);
+      }
+    };
+    
+    // 인덱싱 진행 중일 때
+    if (isIndexing) {
+      // 초기 업데이트
+      updateFileIndexingStatus();
+      
+      // 2초마다 업데이트 (인덱싱 진행 중일 때만)
+      const updateInterval = setInterval(updateFileIndexingStatus, 2000);
+      
+      return () => clearInterval(updateInterval);
+    }
+    
+    // 인덱싱이 방금 종료된 경우 (isIndexing이 false로 변경됨)
+    // 마지막으로 한 번 더 업데이트하여 최종 상태 반영
+    const finalUpdateTimer = setTimeout(() => {
+      updateFileIndexingStatus();
+    }, 500); // 0.5초 후 마지막 업데이트
+    
+    return () => clearTimeout(finalUpdateTimer);
+  }, [isIndexing, activeTab.currentPath]); // 인덱싱 상태나 경로가 변경될 때 재설정
 
   // Initialize drives and folder structure
   useEffect(() => {
@@ -518,10 +572,23 @@ export default function App() {
     initializeDrives();
   }, []);
 
-  // Initialize content for default tab if empty
+  // Initialize content for active tab on mount (single unified effect)
+  const initialLoadDone = React.useRef(false);
   useEffect(() => {
-    if (activeTab.files.length === 0) {
-       navigate(activeTab.selectedFolder, activeTab.currentPath, true); // Populate initial content
+    // Only run once on component mount
+    if (initialLoadDone.current) return;
+    initialLoadDone.current = true;
+    
+    // Load initial content if tab is empty
+    if (activeTab && activeTab.files.length === 0) {
+      const loadInitialContent = async () => {
+        try {
+          await navigate(activeTab.selectedFolder, activeTab.currentPath, true);
+        } catch (error) {
+          console.error('Initial content load error:', error);
+        }
+      };
+      loadInitialContent();
     }
   }, []);
 
@@ -1606,6 +1673,41 @@ export default function App() {
       {contextMenu.visible && contextMenu.target && (
         <div className="fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
           <div className="px-3 py-2 text-xs text-gray-500 border-b border-[#444] mb-1 truncate max-w-[250px]">{contextMenu.target.path}</div>
+          
+          {/* 인덱싱하기 (파일만) */}
+          {contextMenu.target.type !== 'folder' && (
+            <>
+              <button 
+                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
+                onClick={async () => { 
+                  const filePath = contextMenu.target!.path;
+                  try {
+                    addSearchLog(`인덱싱 시작: ${contextMenu.target!.name}`);
+                    const result = await BackendAPI.indexSingleFile(filePath);
+                    
+                    if (result.success) {
+                      addSearchLog(`✅ ${result.message}`);
+                      
+                      // 파일 리스트에서 해당 파일의 인덱싱 상태 업데이트
+                      const updatedFiles = activeTab.files.map(f => 
+                        f.path === filePath ? { ...f, indexed: true } : f
+                      );
+                      updateActiveTab({ files: updatedFiles });
+                    } else {
+                      addSearchLog(`❌ ${result.message}`);
+                    }
+                  } catch (error) {
+                    addSearchLog(`❌ 인덱싱 오류: ${error}`);
+                  }
+                }}
+              >
+                <FileText size={14} className="text-gray-400 group-hover:text-white" /> 
+                인덱싱하기
+              </button>
+              <div className="h-px bg-[#444] my-1"></div>
+            </>
+          )}
+          
           <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { 
             const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
             navigator.clipboard.writeText(dirPath); 
@@ -1758,11 +1860,11 @@ export default function App() {
           <div style={{ width: layout.fileListWidth }} className="flex flex-col border-r border-[#444] bg-[#202020]">
             {/* Header */}
             <div className="flex h-8 bg-[#202020] border-b border-[#444] text-[#D0D0D0]">
-              <div style={{ width: colWidths.name }} className="pl-3 flex items-center hover:bg-[#333] cursor-pointer text-xs" onClick={() => handleSort('name')}>이름 {activeTab.sortConfig.key === 'name' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center hover:bg-[#333] cursor-pointer text-xs border-r border-[#333333]" onClick={() => handleSort('name')}>이름 {activeTab.sortConfig.key === 'name' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
               <Resizer direction="horizontal" onResize={(d) => setColWidths(p => ({ ...p, name: Math.max(50, p.name + d) }))} />
-              <div style={{ width: colWidths.size }} className="px-2 flex items-center justify-end hover:bg-[#333] cursor-pointer text-xs" onClick={() => handleSort('size')}>크기 {activeTab.sortConfig.key === 'size' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <div style={{ width: colWidths.size }} className="px-2 flex items-center justify-end hover:bg-[#333] cursor-pointer text-xs border-r border-[#333333]" onClick={() => handleSort('size')}>크기 {activeTab.sortConfig.key === 'size' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
               <Resizer direction="horizontal" onResize={(d) => setColWidths(p => ({ ...p, size: Math.max(50, p.size + d) }))} />
-              <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
+              <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs flex-1" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
             </div>
             {/* List */}
             <div className="flex-1 overflow-y-auto" onClick={() => updateActiveTab({ selectedFile: null })}>
@@ -1798,7 +1900,7 @@ export default function App() {
                       }}
                       onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: file.name, path: file.path || '', type: file.type } }); }}
                     >
-                      <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden">
+                      <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden border-r border-[#2a2a2a]">
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
                         <span className="truncate">{file.name}</span>
                         {file.indexed !== undefined && (
@@ -1815,15 +1917,15 @@ export default function App() {
                         )}
                       </div>
                       
-                      {/* 수직선: 점선(dashed)으로 변경하고 투명도(opacity)를 주어 희미하게 처리 */}
-                      <div className="w-0 h-full border-l border-dashed border-[#555] opacity-30 mx-0" />
+                      {/* Resizer 공간 (4px - w-1과 동일) */}
+                      <div className="w-1 h-full flex-shrink-0" />
                       
-                      <div style={{ width: colWidths.size }} className="px-2 text-right text-gray-400">{file.size}</div>
+                      <div style={{ width: colWidths.size }} className="px-2 text-right text-gray-400 border-r border-[#2a2a2a]">{file.size}</div>
                       
-                      {/* 수직선: 점선(dashed)으로 변경하고 투명도(opacity)를 주어 희미하게 처리 */}
-                      <div className="w-0 h-full border-l border-dashed border-[#555] opacity-30 mx-0" />
+                      {/* Resizer 공간 (4px - w-1과 동일) */}
+                      <div className="w-1 h-full flex-shrink-0" />
                       
-                      <div style={{ width: colWidths.date }} className="px-2 text-gray-400">{file.date}</div>
+                      <div style={{ width: colWidths.date }} className="px-2 text-gray-400 flex-1">{file.date}</div>
                     </div>
                   );
                 })}

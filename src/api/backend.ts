@@ -76,12 +76,15 @@ export interface SearchResult {
     end: number;
     text: string;
   }>;
+  source?: 'filesystem' | 'database';  // 검색 소스 (파일명 vs 내용)
+  indexed?: boolean;  // 인덱싱 여부
 }
 
 export interface SearchResponse {
   query: string;
   count: number;
   results: SearchResult[];
+  search_time?: number;  // 검색 소요 시간 (초)
 }
 
 export interface Statistics {
@@ -500,6 +503,35 @@ export async function checkFilesIndexed(paths: string[]): Promise<Record<string,
   } catch (error) {
     console.error('파일 인덱싱 여부 확인 오류:', error);
     return {};
+  }
+}
+
+/**
+ * 단일 파일 인덱싱 (우클릭 메뉴용)
+ */
+export interface IndexSingleFileResult {
+  success: boolean;
+  message: string;
+  indexed: boolean;
+  char_count?: number;
+  token_count?: number;
+}
+
+export async function indexSingleFile(filePath: string): Promise<IndexSingleFileResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/indexing/single-file`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        file_path: filePath
+      })
+    });
+    return await response.json();
+  } catch (error) {
+    console.error('단일 파일 인덱싱 오류:', error);
+    throw error;
   }
 }
 
