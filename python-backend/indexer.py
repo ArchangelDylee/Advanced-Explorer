@@ -2449,8 +2449,6 @@ class FileIndexer:
                                 logger.debug(f"⚠️ OCR 페이지 {page_num + 1} 오류: {page_ocr_error}")
                                 continue
                         
-                        doc.close()
-                        
                         if ocr_text_parts:
                             ocr_result = '\n'.join(ocr_text_parts)
                             logger.info(f"✅ PDF OCR 완료: {filename} ({len(ocr_result)}자, {len(ocr_text_parts)}페이지)")
@@ -2471,7 +2469,7 @@ class FileIndexer:
                         return None
                     
                     finally:
-                        doc.close()
+                        doc.close()  # finally에서만 한 번 close
                 else:
                     doc.close()
                     logger.warning(f"⚠️ PDF 텍스트 없음, OCR 불가 (Tesseract 미설치): {filename}")
@@ -2600,9 +2598,9 @@ class FileIndexer:
                     data = stream.read()
                     # HWP 미리보기 텍스트는 UTF-16LE 인코딩
                     text = data.decode('utf-16le', errors='ignore')
-                    ole.close()
                     
                     if text.strip():
+                        ole.close()
                         logger.info(f"✅ HWP 파일 인덱싱 완료 (olefile 미리보기, 한글 미설치): {filename}")
                         
                         # 임시 파일 정리
@@ -2611,7 +2609,7 @@ class FileIndexer:
                         
                         return text[:100000]
                 
-                ole.close()
+                ole.close()  # 텍스트가 없거나 PrvText가 없을 때만 close
                 logger.debug(f"HWP olefile 추출 실패 (미리보기 없음): {filename}")
             
             except Exception as e:

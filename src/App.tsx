@@ -849,7 +849,8 @@ export default function App() {
           
           // 하위 폴더가 로드되지 않았다면 로드
           if (!updatedNode.childrenLoaded && node.path) {
-            updatedNode = await loadSubfoldersForSync(updatedNode);
+            const loadedNode = await loadSubfoldersForSync(updatedNode);
+            updatedNode = { ...loadedNode, expanded: true }; // expanded 상태 보존
           }
           
           // 자식들을 재귀적으로 확인
