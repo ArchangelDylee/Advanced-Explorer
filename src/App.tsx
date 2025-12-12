@@ -317,11 +317,37 @@ export default function App() {
   const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, csv: true, etc: true });
   const [folderStructure, setFolderStructure] = useLocalStorage<FolderNode[]>('folderStructure', MOCK_FOLDERS_INITIAL);
 
+  // 마지막 Focusing된 폴더 정보 저장
+  const [lastFocusedFolder, setLastFocusedFolder] = useLocalStorage<{ name: string; path: string } | null>('lastFocusedFolder', null);
+
+  // 초기 탭 생성 시 마지막 Focusing된 폴더 또는 문서 폴더 사용
+  const getInitialFolder = () => {
+    if (lastFocusedFolder && lastFocusedFolder.path && lastFocusedFolder.name) {
+      return {
+        name: lastFocusedFolder.name,
+        path: lastFocusedFolder.path
+      };
+    }
+    return {
+      name: '문서',
+      path: `${userHome}\\Documents`
+    };
+  };
+
+  const initialFolder = getInitialFolder();
+
   // Tabs (Multi-instance)
   const [tabs, setTabs] = useLocalStorage<TabItem[]>('tabs', [{ 
-    id: 1, title: '문서', searchText: '', selectedFolder: '문서', currentPath: `${userHome}\\Documents`, selectedFile: null, 
-    files: [], sortConfig: { key: null, direction: 'asc' }, 
-    history: [{ name: '문서', path: `${userHome}\\Documents` }], historyIndex: 0 
+    id: 1, 
+    title: initialFolder.name, 
+    searchText: '', 
+    selectedFolder: initialFolder.name, 
+    currentPath: initialFolder.path, 
+    selectedFile: null, 
+    files: [], 
+    sortConfig: { key: null, direction: 'asc' }, 
+    history: [{ name: initialFolder.name, path: initialFolder.path }], 
+    historyIndex: 0 
   }]);
   const [activeTabId, setActiveTabId] = useLocalStorage<number>('activeTabId', 1);
   const [nextTabId, setNextTabId] = useLocalStorage<number>('nextTabId', 2);
@@ -706,6 +732,14 @@ export default function App() {
   // --- Helpers ---
   const updateActiveTab = (updates: Partial<TabItem>) => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...updates } : t));
+    
+    // currentPath가 변경되면 lastFocusedFolder 업데이트
+    if (updates.currentPath && updates.selectedFolder) {
+      setLastFocusedFolder({
+        name: updates.selectedFolder,
+        path: updates.currentPath
+      });
+    }
   };
 
   const addSearchLog = (msg: string) => {
@@ -1870,7 +1904,24 @@ export default function App() {
             <div onClick={(e) => { e.stopPropagation(); if(tabs.length > 1) { const remain = tabs.filter(t=>t.id!==tab.id); setTabs(remain); if(tab.id===activeTabId) setActiveTabId(remain[remain.length-1].id); }}} className="p-0.5 rounded hover:bg-[#333] hover:text-red-400 opacity-0 group-hover:opacity-100 active:scale-90 transition-transform duration-100"><X size={12} /></div>
           </div>
         ))}
-        <button onClick={() => { const id = nextTabId; setTabs([...tabs, { id, title: '문서', searchText: '', selectedFolder: '문서', currentPath: `${userHome}\\Documents`, selectedFile: null, files: [], sortConfig: {key:null, direction:'asc'}, history: [{name:'문서', path: `${userHome}\\Documents`}], historyIndex: 0 }]); setNextTabId(id+1); setActiveTabId(id); }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
+        <button onClick={() => { 
+          const id = nextTabId; 
+          const newFolder = getInitialFolder();
+          setTabs([...tabs, { 
+            id, 
+            title: newFolder.name, 
+            searchText: '', 
+            selectedFolder: newFolder.name, 
+            currentPath: newFolder.path, 
+            selectedFile: null, 
+            files: [], 
+            sortConfig: {key:null, direction:'asc'}, 
+            history: [{name: newFolder.name, path: newFolder.path}], 
+            historyIndex: 0 
+          }]); 
+          setNextTabId(id+1); 
+          setActiveTabId(id); 
+        }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
         <div className="flex-1 h-full" style={{ WebkitAppRegion: 'drag' } as any}></div>
       </div>
 

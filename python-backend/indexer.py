@@ -123,6 +123,51 @@ except ImportError:
     TESSERACT_AVAILABLE = False
     logging.warning("pytesseract not installed. OCR support disabled (이미지/스캔 PDF 처리 불가).")
 
+# 이미지 캡셔닝 (AI 이미지 묘사)
+try:
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    from PIL import Image as PILImage
+    import torch
+    BLIP_AVAILABLE = True
+    
+    # BLIP 모델 초기화 (첫 실행 시 자동 다운로드 ~1-2GB)
+    BLIP_MODEL = None
+    BLIP_PROCESSOR = None
+    
+    def initialize_blip_model():
+        """BLIP 모델 초기화 (지연 로딩)"""
+        global BLIP_MODEL, BLIP_PROCESSOR
+        
+        if BLIP_MODEL is not None:
+            return True
+        
+        try:
+            logging.info("🤖 BLIP 이미지 캡셔닝 모델 로딩 중...")
+            logging.info("   (첫 실행 시 모델 다운로드 ~1-2GB, 시간이 걸릴 수 있습니다)")
+            
+            # BLIP 모델 로드 (Salesforce/blip-image-captioning-base)
+            BLIP_PROCESSOR = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+            BLIP_MODEL = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+            
+            # CPU 모드 설정 (GPU가 있으면 자동으로 GPU 사용)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            BLIP_MODEL.to(device)
+            
+            logging.info(f"✅ BLIP 모델 로딩 완료 (디바이스: {device})")
+            return True
+        except Exception as e:
+            logging.error(f"❌ BLIP 모델 로딩 실패: {e}")
+            return False
+    
+    logging.info("✓ BLIP 이미지 캡셔닝 사용 가능 (지연 로딩)")
+    
+except ImportError:
+    BLIP_AVAILABLE = False
+    logging.warning("transformers/torch not installed. Image captioning disabled (이미지 묘사 불가).")
+    
+    def initialize_blip_model():
+        return False
+
 from database import DatabaseManager
 import sys
 import io
@@ -179,7 +224,7 @@ logger = logging.getLogger(__name__)
 
 # 상수 정의
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
-PARSE_TIMEOUT = 60  # 60초
+PARSE_TIMEOUT = 120  # 120초 (2분)
 
 
 class TimeoutError(Exception):
@@ -1387,7 +1432,7 @@ class FileIndexer:
                 # 타임아웃 에러인 경우 특별히 표시
                 if 'timeout' in error_msg.lower() or error_type == 'TimeoutError':
                     if self.log_callback:
-                        self.log_callback('Error', os.path.basename(file_path), f'⏱ 타임아웃 (60초 초과)')
+                        self.log_callback('Error', os.path.basename(file_path), f'⏱ 타임아웃 ({PARSE_TIMEOUT}초 초과)')
                 elif 'memory' in error_msg.lower():
                     if self.log_callback:
                         self.log_callback('Error', os.path.basename(file_path), f'💾 메모리 부족')
@@ -2866,17 +2911,23 @@ class FileIndexer:
             if temp_file:
                 self._cleanup_temp(temp_file)
     
-    def _extract_image_ocr(self, file_path: str) -> Optional[str]:
+    def _extract_image_caption(self, file_path: str) -> Optional[str]:
         """
-        이미지 파일에서 OCR로 텍스트 추출
+        이미지 파일을 AI로 분석하여 설명 생성
         
-        Tesseract OCR 사용 (한글 + 영어)
-        - 스캔된 문서 이미지
-        - 스크린샷
-        - 사진 속 텍스트
+        BLIP 모델 사용 (Salesforce)
+        - 이미지 내용을 자연어로 설명
+        - 예: "고양이가 소파에 앉아있다", "산 풍경", "사무실 회의"
         
-        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 분석합니다!
         """
+        if not BLIP_AVAILABLE:
+            return None
+        
+        # BLIP 모델 초기화 (지연 로딩)
+        if not initialize_blip_model():
+            return None
+        
         temp_file = None
         filename = os.path.basename(file_path)
         
@@ -2885,71 +2936,167 @@ class FileIndexer:
             temp_file = self._copy_to_temp(file_path)
             
             if not temp_file:
-                logger.info(f"⛔ 이미지 파일 복사 실패 (사용 중) - Skip: {filename}")
-                self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                logger.debug(f"⛔ 이미지 파일 복사 실패 (사용 중) - 캡셔닝 Skip: {filename}")
                 return None
             
             # 2단계: 이미지 파일 열기
-            logger.debug(f"📷 이미지 OCR 시작: {filename}")
+            logger.debug(f"🤖 이미지 캡셔닝 시작: {filename}")
             
-            img = Image.open(temp_file)
+            img = PILImage.open(temp_file).convert('RGB')
             
-            # 이미지가 너무 크면 리사이즈 (OCR 속도 향상)
-            max_dimension = 3000
+            # 이미지가 너무 크면 리사이즈 (처리 속도 향상)
+            max_dimension = 512  # BLIP 모델 권장 크기
             if img.width > max_dimension or img.height > max_dimension:
                 ratio = min(max_dimension / img.width, max_dimension / img.height)
                 new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-                logger.debug(f"📷 이미지 리사이즈: {filename} -> {new_size}")
+                img = img.resize(new_size, PILImage.Resampling.LANCZOS)
+                logger.debug(f"🤖 이미지 리사이즈: {filename} -> {new_size}")
             
-            # 3단계: OCR 수행 (한글 + 영어)
+            # 3단계: BLIP 모델로 캡션 생성
             try:
-                # Tesseract OCR 실행 (kor+eng: 한글 + 영어 동시 인식)
-                ocr_text = pytesseract.image_to_string(img, lang='kor+eng')
+                device = "cuda" if torch.cuda.is_available() else "cpu"
                 
-                if ocr_text.strip():
-                    logger.info(f"✅ 이미지 OCR 완료: {filename} ({len(ocr_text)}자 추출)")
+                # 이미지 전처리
+                inputs = BLIP_PROCESSOR(img, return_tensors="pt").to(device)
+                
+                # 캡션 생성
+                with torch.no_grad():
+                    output = BLIP_MODEL.generate(**inputs, max_length=50)
+                
+                # 텍스트로 디코딩
+                caption = BLIP_PROCESSOR.decode(output[0], skip_special_tokens=True)
+                
+                if caption.strip():
+                    logger.info(f"✅ 이미지 캡셔닝 완료: {filename} - \"{caption}\"")
                     
                     # 임시 파일 정리
                     if temp_file:
                         self._cleanup_temp(temp_file)
                     
-                    return ocr_text[:100000]
+                    return caption
                 else:
-                    logger.warning(f"⚠️ 이미지 OCR 결과 없음 (텍스트 인식 실패): {filename}")
-                    self._log_skip(file_path, "OCR 결과 없음 - 텍스트 인식 실패")
+                    logger.warning(f"⚠️ 이미지 캡셔닝 결과 없음: {filename}")
                     return None
             
-            except pytesseract.TesseractNotFoundError:
-                logger.error(f"❌ Tesseract 실행 파일을 찾을 수 없습니다")
-                logger.error("   다운로드: https://github.com/UB-Mannheim/tesseract/wiki")
-                self._log_skip(file_path, "Tesseract OCR 미설치")
-                return None
-            
-            except Exception as ocr_error:
-                logger.error(f"❌ 이미지 OCR 오류 [{filename}]: {ocr_error}")
-                self._log_skip(file_path, f"OCR 오류: {str(ocr_error)[:80]}")
+            except Exception as caption_error:
+                logger.error(f"❌ 이미지 캡셔닝 오류 [{filename}]: {caption_error}")
                 return None
         
         except Exception as e:
-            error_msg = str(e).lower()
-            
-            logger.error(f"❌ 이미지 파일 처리 오류 [{filename}]: {e}")
-            
-            # 접근 불가 = 재시도
-            if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
-                logger.info(f"⛔ 이미지 파일 접근 불가 - 나중에 재시도: {filename}")
-                self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
-                self._add_to_retry_queue(file_path, "파일 접근 불가")
-            else:
-                self._log_skip(file_path, f"이미지 처리 오류: {str(e)[:80]}")
-            
+            logger.error(f"❌ 이미지 파일 처리 오류 (캡셔닝) [{filename}]: {e}")
             return None
         
         finally:
-            # 3단계: 임시 파일 정리
+            # 임시 파일 정리
             if temp_file:
                 self._cleanup_temp(temp_file)
+    
+    def _extract_image_ocr(self, file_path: str) -> Optional[str]:
+        """
+        이미지 파일에서 OCR로 텍스트 추출 + AI 이미지 묘사
+        
+        1. Tesseract OCR: 이미지 속 텍스트 추출 (한글 + 영어)
+        2. BLIP AI 모델: 이미지 내용 설명 생성
+        
+        두 결과를 결합하여 반환
+        
+        🛡️ 안전 모드: 원본 파일을 건드리지 않고 임시 복사본으로 인덱싱합니다!
+        """
+        temp_file = None
+        filename = os.path.basename(file_path)
+        
+        # 결과 저장용
+        ocr_text = None
+        caption_text = None
+        
+        # 1단계: AI 이미지 캡셔닝 (먼저 시도 - 빠름)
+        if BLIP_AVAILABLE:
+            try:
+                caption_text = self._extract_image_caption(file_path)
+                if caption_text:
+                    logger.debug(f"🤖 캡션: \"{caption_text}\"")
+            except Exception as e:
+                logger.debug(f"캡셔닝 오류 (무시하고 계속): {e}")
+        
+        # 2단계: OCR 텍스트 추출
+        if TESSERACT_AVAILABLE:
+            try:
+                # 원본 파일을 임시 폴더에 복사
+                temp_file = self._copy_to_temp(file_path)
+                
+                if not temp_file:
+                    logger.info(f"⛔ 이미지 파일 복사 실패 (사용 중) - Skip: {filename}")
+                    # 캡션만 있으면 반환
+                    if caption_text:
+                        return f"[이미지 설명: {caption_text}]"
+                    self._log_skip(file_path, "파일이 사용 중이거나 접근 불가")
+                    return None
+                
+                # 이미지 파일 열기
+                logger.debug(f"📷 이미지 OCR 시작: {filename}")
+                
+                img = Image.open(temp_file)
+                
+                # 이미지가 너무 크면 리사이즈 (OCR 속도 향상)
+                max_dimension = 3000
+                if img.width > max_dimension or img.height > max_dimension:
+                    ratio = min(max_dimension / img.width, max_dimension / img.height)
+                    new_size = (int(img.width * ratio), int(img.height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    logger.debug(f"📷 이미지 리사이즈: {filename} -> {new_size}")
+                
+                # OCR 수행 (한글 + 영어)
+                try:
+                    # Tesseract OCR 실행 (kor+eng: 한글 + 영어 동시 인식)
+                    ocr_text = pytesseract.image_to_string(img, lang='kor+eng')
+                    
+                    if ocr_text.strip():
+                        logger.info(f"✅ 이미지 OCR 완료: {filename} ({len(ocr_text)}자 추출)")
+                    else:
+                        logger.debug(f"📷 OCR 결과 없음: {filename}")
+                
+                except pytesseract.TesseractNotFoundError:
+                    logger.error(f"❌ Tesseract 실행 파일을 찾을 수 없습니다")
+                    logger.error("   다운로드: https://github.com/UB-Mannheim/tesseract/wiki")
+                
+                except Exception as ocr_error:
+                    logger.error(f"❌ 이미지 OCR 오류 [{filename}]: {ocr_error}")
+            
+            except Exception as e:
+                logger.error(f"❌ 이미지 처리 오류 [{filename}]: {e}")
+                error_msg = str(e).lower()
+                
+                # 접근 불가 = 재시도
+                if 'being used' in error_msg or 'locked' in error_msg or 'permission denied' in error_msg:
+                    logger.info(f"⛔ 이미지 파일 접근 불가 - 나중에 재시도: {filename}")
+                    self._log_skip(file_path, "파일 접근 불가 - 재시도 예정")
+                    self._add_to_retry_queue(file_path, "파일 접근 불가")
+            
+            finally:
+                # 임시 파일 정리
+                if temp_file:
+                    self._cleanup_temp(temp_file)
+        
+        # 3단계: 결과 결합
+        result_parts = []
+        
+        # AI 이미지 설명 추가
+        if caption_text:
+            result_parts.append(f"[이미지 설명: {caption_text}]")
+        
+        # OCR 텍스트 추가
+        if ocr_text and ocr_text.strip():
+            result_parts.append(f"[이미지 속 텍스트]\n{ocr_text.strip()}")
+        
+        # 결과 반환
+        if result_parts:
+            combined_result = "\n\n".join(result_parts)
+            logger.info(f"✅ 이미지 인덱싱 완료: {filename} (캡션: {bool(caption_text)}, OCR: {bool(ocr_text)})")
+            return combined_result[:100000]
+        else:
+            logger.warning(f"⚠️ 이미지 처리 결과 없음: {filename}")
+            self._log_skip(file_path, "캡션 및 OCR 모두 실패")
+            return None
     
     def get_stats(self) -> dict:
         """인덱싱 통계 반환"""

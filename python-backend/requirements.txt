@@ -38,3 +38,10 @@ pytesseract==0.3.10      # Tesseract OCR Python wrapper
 # 다운로드: https://github.com/UB-Mannheim/tesseract/wiki
 # 설치 후 환경변수나 코드에서 경로 설정 필요
 
+# 이미지 캡셔닝 (AI 이미지 묘사) - 로컬 AI 모델
+transformers==4.36.2     # Hugging Face Transformers (BLIP 모델)
+torch==2.1.2             # PyTorch (CPU 버전)
+torchvision==0.16.2      # PyTorch Vision (이미지 처리)
+# Note: 첫 실행 시 BLIP 모델 자동 다운로드 (약 1-2GB)
+# GPU가 있으면 훨씬 빠르지만 CPU에서도 작동합니다
+
