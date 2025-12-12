@@ -922,6 +922,134 @@ def summarize_content():
         }), 500
 
 
+@app.route('/api/summarize/gpt', methods=['POST'])
+def summarize_content_with_gpt():
+    """
+    파일 내용 요약 (OpenAI GPT API)
+    
+    Request Body:
+        {
+            "file_path": "C:\\path\\to\\file.pdf",  # 파일 경로
+            "api_key": "sk-proj-..."                 # OpenAI API Key
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "method": "GPT-4o-mini",
+            "summary": "GPT가 요약한 내용...",
+            "original_length": 5000,
+            "summary_length": 500,
+            "compression_ratio": "10.0%"
+        }
+    """
+    try:
+        import openai
+        
+        data = request.json
+        
+        if not data or 'file_path' not in data:
+            return jsonify({'error': 'file_path가 필요합니다'}), 400
+        
+        if 'api_key' not in data:
+            return jsonify({'error': 'api_key가 필요합니다'}), 400
+        
+        file_path = data['file_path']
+        api_key = data['api_key']
+        
+        # DB에서 인덱스된 내용 가져오기
+        file_detail = db_manager.get_indexed_file_detail(file_path)
+        
+        if not file_detail:
+            return jsonify({
+                'success': False,
+                'error': '파일이 인덱스되지 않았습니다'
+            }), 404
+        
+        text = file_detail.get('content', '')
+        
+        if not text:
+            return jsonify({
+                'success': False,
+                'error': '파일 내용이 비어있습니다'
+            }), 400
+        
+        # 텍스트 길이 제한 (GPT API 토큰 제한 고려)
+        max_chars = 10000  # 약 2500 토큰
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+            logger.info(f"텍스트를 {max_chars}자로 제한했습니다")
+        
+        # OpenAI API 호출
+        try:
+            # OpenAI 클라이언트 생성 (명시적으로 httpx 설정 제외)
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # 비용 효율적인 모델
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "당신은 문서 요약 전문가입니다. 다음 텍스트를 한국어로 간결하고 명확하게 요약해주세요. 핵심 내용만 3-5개 문장으로 정리해주세요."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"다음 텍스트를 요약해주세요:\n\n{text}"
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=500
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            
+            # 응답 구성
+            result = {
+                'success': True,
+                'method': 'GPT-4o-mini',
+                'summary': summary,
+                'original_length': len(text),
+                'summary_length': len(summary),
+                'compression_ratio': f"{len(summary) / len(text) * 100:.1f}%"
+            }
+            
+            logger.info(f"GPT 요약 완료: {file_path} ({len(text)}자 → {len(summary)}자)")
+            
+            return jsonify(result)
+        
+        except openai.AuthenticationError:
+            return jsonify({
+                'success': False,
+                'error': 'API Key가 유효하지 않습니다. OpenAI 대시보드에서 확인해주세요.'
+            }), 401
+        
+        except openai.RateLimitError:
+            return jsonify({
+                'success': False,
+                'error': 'API 사용량 한도를 초과했습니다. 잠시 후 다시 시도해주세요.'
+            }), 429
+        
+        except openai.APIError as e:
+            return jsonify({
+                'success': False,
+                'error': f'OpenAI API 오류: {str(e)}'
+            }), 500
+    
+    except ImportError:
+        return jsonify({
+            'success': False,
+            'error': 'openai 라이브러리가 설치되지 않았습니다. pip install openai를 실행해주세요.'
+        }), 500
+    
+    except Exception as e:
+        logger.error(f"GPT 요약 API 오류: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 # ============== 메인 실행 ==============
 
 def run_server(host='127.0.0.1', port=5000, debug=False):

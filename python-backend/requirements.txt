@@ -45,3 +45,7 @@ torchvision==0.16.2      # PyTorch Vision (이미지 처리)
 # Note: 첫 실행 시 BLIP 모델 자동 다운로드 (약 1-2GB)
 # GPU가 있으면 훨씬 빠르지만 CPU에서도 작동합니다
 
+# GPT 요약 (OpenAI API)
+openai==1.54.0          # OpenAI Python SDK
+# Note: OpenAI API Key 필요 (https://platform.openai.com/api-keys)
+

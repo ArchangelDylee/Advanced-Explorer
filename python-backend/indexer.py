@@ -223,8 +223,8 @@ for handler in logging.root.handlers:
 logger = logging.getLogger(__name__)
 
 # 상수 정의
-MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
-PARSE_TIMEOUT = 120  # 120초 (2분)
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+PARSE_TIMEOUT = 180  # 180초 (3분)
 
 
 class TimeoutError(Exception):

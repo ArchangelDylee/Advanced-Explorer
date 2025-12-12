@@ -101,10 +101,15 @@ class SearchEngine:
             if search_path:
                 filename_results = self._search_filesystem(query, search_path)
                 for result in filename_results:
-                    results[result['path']] = {
+                    file_path = result['path']
+                    
+                    # DB에 해당 파일이 있는지 확인 (경로 정규화)
+                    is_indexed = self.db.is_file_indexed(file_path)
+                    
+                    results[file_path] = {
                         **result,
                         'source': 'filesystem',
-                        'indexed': False
+                        'indexed': is_indexed
                     }
             
             # 2. 내용 검색 (DB)

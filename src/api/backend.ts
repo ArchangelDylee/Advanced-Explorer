@@ -464,6 +464,9 @@ export interface SummaryResult {
   error?: string;
 }
 
+/**
+ * 로컬 TextRank로 파일 요약
+ */
 export async function summarizeFile(filePath: string, sentencesCount: number = 5): Promise<SummaryResult> {
   try {
     const response = await fetch(`${API_BASE_URL}/summarize`, {
@@ -479,6 +482,28 @@ export async function summarizeFile(filePath: string, sentencesCount: number = 5
     return await response.json();
   } catch (error) {
     console.error('파일 요약 오류:', error);
+    throw error;
+  }
+}
+
+/**
+ * GPT API로 파일 요약
+ */
+export async function summarizeFileWithGPT(filePath: string, apiKey: string): Promise<SummaryResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/summarize/gpt`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        file_path: filePath,
+        api_key: apiKey
+      })
+    });
+    return await response.json();
+  } catch (error) {
+    console.error('GPT 파일 요약 오류:', error);
     throw error;
   }
 }
