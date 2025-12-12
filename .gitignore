@@ -39,3 +39,5 @@ python-backend/logs/
 python-backend/check_db.py
 
 
+
+set_api_key.js

@@ -1639,8 +1639,8 @@ export default function App() {
       // 백엔드 검색 API 호출
       addSearchLog(`📡 백엔드 검색 엔진에 요청 중...`);
       
-      const searchPath = searchOptions.subfolder ? activeTab.currentPath : undefined;
-      const response = await BackendAPI.searchCombined(searchTerm, searchPath, 100);
+      const searchPath = searchOptions.subfolder && activeTab.currentPath ? activeTab.currentPath : null;
+      const response = await BackendAPI.searchCombined(searchTerm, searchPath as any, 100);
       
       addSearchLog(`✓ 검색 쿼리 파싱 완료`);
       addSearchLog(`📂 DB에서 파일 검색 중...`);

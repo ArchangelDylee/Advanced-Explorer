@@ -528,16 +528,19 @@ class DatabaseManager:
             파일 상세 정보 또는 None
         """
         try:
-            logger.debug(f"DB 쿼리: SELECT * FROM files_fts WHERE path = '{path}'")
+            # 경로 정규화 (Windows 백슬래시 통일)
+            import os
+            normalized_path = os.path.normpath(path)
+            logger.debug(f"DB 쿼리: SELECT * FROM files_fts WHERE path = '{normalized_path}'")
             
             cursor = self.conn.execute(
                 "SELECT path, content, mtime FROM files_fts WHERE path = ?",
-                (path,)
+                (normalized_path,)
             )
             row = cursor.fetchone()
             
             if row:
-                logger.debug(f"✓ DB에서 파일 발견: {path}")
+                logger.info(f"✓ 파일 발견: {normalized_path} (길이: {len(row['content'])}자)")
                 return {
                     'path': row['path'],
                     'content': row['content'],
@@ -546,15 +549,43 @@ class DatabaseManager:
                     'mtime_formatted': datetime.fromtimestamp(float(row['mtime'])).strftime('%Y-%m-%d %H:%M:%S')
                 }
             else:
-                logger.debug(f"✗ DB에 파일 없음: {path}")
+                logger.debug(f"✗ DB에 파일 없음 (정규화된 경로): {normalized_path}")
+                
                 # 대소문자 무시하고 검색
                 cursor2 = self.conn.execute(
-                    "SELECT path FROM files_fts WHERE LOWER(path) = LOWER(?)",
-                    (path,)
+                    "SELECT path, content, mtime FROM files_fts WHERE LOWER(path) = LOWER(?)",
+                    (normalized_path,)
                 )
                 row2 = cursor2.fetchone()
                 if row2:
-                    logger.warning(f"경로 대소문자 불일치: DB={row2['path']}, 요청={path}")
+                    logger.warning(f"경로 대소문자 불일치: DB={row2['path']}, 요청={normalized_path}")
+                    # 대소문자 불일치해도 결과 반환
+                    return {
+                        'path': row2['path'],
+                        'content': row2['content'],
+                        'content_length': len(row2['content']),
+                        'mtime': row2['mtime'],
+                        'mtime_formatted': datetime.fromtimestamp(float(row2['mtime'])).strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                
+                # 슬래시 방향 변경해서 다시 시도 (\ -> / or / -> \)
+                alt_path = normalized_path.replace('\\', '/') if '\\' in normalized_path else normalized_path.replace('/', '\\')
+                cursor3 = self.conn.execute(
+                    "SELECT path, content, mtime FROM files_fts WHERE path = ? OR LOWER(path) = LOWER(?)",
+                    (alt_path, alt_path)
+                )
+                row3 = cursor3.fetchone()
+                if row3:
+                    logger.warning(f"경로 슬래시 불일치: DB={row3['path']}, 요청={normalized_path}")
+                    return {
+                        'path': row3['path'],
+                        'content': row3['content'],
+                        'content_length': len(row3['content']),
+                        'mtime': row3['mtime'],
+                        'mtime_formatted': datetime.fromtimestamp(float(row3['mtime'])).strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                
+                logger.warning(f"✗ 파일을 찾을 수 없음: {path} (정규화: {normalized_path}, 대체: {alt_path})")
                 
             return None
         except sqlite3.Error as e:

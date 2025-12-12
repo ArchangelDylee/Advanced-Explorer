@@ -248,19 +248,30 @@ export async function searchFiles(
  */
 export async function searchCombined(
   query: string,
-  searchPath?: string,
+  searchPath?: string | null,
   maxResults: number = 100
 ): Promise<any> {
   try {
+    const body: any = {
+      query,
+      max_results: maxResults
+    };
+    
+    // searchPath가 유효한 경우에만 포함
+    if (searchPath && searchPath.trim()) {
+      body.search_path = searchPath;
+    }
+    
     const response = await fetch(`${API_BASE_URL}/search/combined`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query,
-        search_path: searchPath,
-        max_results: maxResults
-      })
+      body: JSON.stringify(body)
     });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
     return await response.json();
   } catch (error) {
     console.error('통합 검색 오류:', error);
