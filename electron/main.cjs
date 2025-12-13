@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, powerMonitor, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, powerMonitor, globalShortcut, Menu } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -64,6 +64,9 @@ let userActivityMonitor = {
 };
 
 function createWindow() {
+  // 메뉴바 숨기기
+  Menu.setApplicationMenu(null);
+  
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,

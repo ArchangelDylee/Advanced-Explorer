@@ -662,6 +662,7 @@ def search_combined():
         query = data.get('query', '')
         search_path = data.get('search_path', None)
         max_results = data.get('max_results', 100)
+        include_content = data.get('include_content', True)  # 기본값: 내용 포함
         
         if not query:
             return jsonify({'error': 'Query is required'}), 400
@@ -669,11 +670,17 @@ def search_combined():
         # 검색어 파싱
         parsed = search_engine.parse_search_query(query)
         
+        logger.info(f"🔍 통합 검색 요청:")
+        logger.info(f"  - 검색어: {query}")
+        logger.info(f"  - 내용 포함: {include_content}")
+        logger.info(f"  - 검색 경로: {search_path}")
+        
         # 통합 검색 실행
         results = search_engine.search_combined(
             parsed['escaped_query'], 
             search_path, 
-            max_results
+            max_results,
+            include_content=include_content  # 내용 검색 옵션 전달
         )
         
         # 검색 시간 계산
@@ -684,7 +691,8 @@ def search_combined():
             'parsed': parsed,
             'count': len(results),
             'results': results,
-            'search_time': round(search_time, 3)
+            'search_time': round(search_time, 3),
+            'include_content': include_content
         })
     
     except Exception as e:
@@ -702,11 +710,48 @@ def get_indexed_content():
         if not file_path:
             return jsonify({'error': 'Path is required'}), 400
         
+        # 디버깅: 요청된 경로 로깅
+        logger.info("=" * 80)
+        logger.info(f"📂 파일 내용 조회 요청:")
+        logger.info(f"  - 경로: {file_path}")
+        logger.info(f"  - 경로 길이: {len(file_path)}")
+        logger.info(f"  - 경로 타입: {type(file_path)}")
+        logger.info(f"  - 경로 repr: {repr(file_path)}")
+        
         # DB에서 내용 조회
         results = db_manager.conn.execute(
-            "SELECT content, mtime FROM files_fts WHERE path = ?",
+            "SELECT content, mtime, deleted FROM files_fts WHERE path = ?",
             (file_path,)
         ).fetchone()
+        
+        # 디버깅: 조회 결과 로깅
+        if results:
+            logger.info(f"  ✓ DB에서 발견!")
+            logger.info(f"    - 내용 길이: {len(results['content'])}자")
+            logger.info(f"    - 삭제 여부: {results['deleted']}")
+            logger.info("=" * 80)
+        else:
+            logger.warning(f"  ✗ DB에서 찾을 수 없음!")
+            
+            # 파일명만 추출
+            filename = file_path.split(chr(92))[-1] if chr(92) in file_path else file_path.split('/')[-1]
+            logger.warning(f"  - 파일명: {filename}")
+            
+            # 비슷한 경로 검색
+            similar = db_manager.conn.execute(
+                "SELECT path FROM files_fts WHERE path LIKE ? LIMIT 5",
+                (f"%{filename}%",)
+            ).fetchall()
+            
+            if similar:
+                logger.warning(f"  - 유사한 경로 {len(similar)}개 발견:")
+                for i, row in enumerate(similar, 1):
+                    logger.warning(f"    {i}. {row['path']}")
+                    logger.warning(f"       길이: {len(row['path'])}, repr: {repr(row['path'])}")
+            else:
+                logger.warning(f"  - 유사한 파일도 없음!")
+            
+            logger.info("=" * 80)
         
         if results:
             return jsonify({

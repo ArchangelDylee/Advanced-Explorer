@@ -874,6 +874,9 @@ export default function App() {
           // 문서 파일 - 인덱싱된 내용 조회
           setImagePreview(null);
           console.log('📄 문서 파일 선택:', activeTab.selectedFile.path);
+          console.log('📄 경로 타입:', typeof activeTab.selectedFile.path);
+          console.log('📄 경로 길이:', activeTab.selectedFile.path?.length);
+          console.log('📄 경로 인코딩 테스트:', encodeURIComponent(activeTab.selectedFile.path || ''));
           
           try {
             const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
@@ -1016,6 +1019,56 @@ export default function App() {
         setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
       }
       setShowIndexingLog(false);
+    }
+  };
+
+  // 검색어 하이라이트 함수
+  const highlightSearchTerms = (text: string, searchQuery: string): React.ReactNode => {
+    if (!searchQuery || !searchQuery.trim() || !text) {
+      return text;
+    }
+
+    try {
+      // 쌍따옴표 검색 ("정확한 구문")
+      if (searchQuery.startsWith('"') && searchQuery.endsWith('"')) {
+        const exactTerm = searchQuery.slice(1, -1);
+        if (!exactTerm) return text;
+
+        const regex = new RegExp(`(${exactTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        const parts = text.split(regex);
+
+        return parts.map((part, i) =>
+          regex.test(part) ? (
+            <mark key={i} style={{ backgroundColor: '#ffff00', color: '#000', fontWeight: 'bold' }}>
+              {part}
+            </mark>
+          ) : (
+            part
+          )
+        );
+      }
+
+      // 여러 단어 OR 검색
+      const terms = searchQuery.split(/\s+/).filter(t => t.length > 0);
+      if (terms.length === 0) return text;
+
+      // 모든 검색어를 OR로 연결한 정규식
+      const escapedTerms = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const regex = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
+      const parts = text.split(regex);
+
+      return parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} style={{ backgroundColor: '#ffff00', color: '#000', fontWeight: 'bold' }}>
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      );
+    } catch (error) {
+      console.error('하이라이트 오류:', error);
+      return text;
     }
   };
 
@@ -1861,9 +1914,16 @@ export default function App() {
     try {
       // 백엔드 검색 API 호출
       addSearchLog(`📡 백엔드 검색 엔진에 요청 중...`);
+      addSearchLog(`   - 파일명 검색: ${searchOptions.content ? '✓ (항상 실행)' : '✓'}`);
+      addSearchLog(`   - 내용 검색: ${searchOptions.content ? '✓ (활성화)' : '✗ (비활성화)'}`);
       
       const searchPath = searchOptions.subfolder && activeTab.currentPath ? activeTab.currentPath : null;
-      const response = await BackendAPI.searchCombined(searchTerm, searchPath as any, 100);
+      const response = await BackendAPI.searchCombined(
+        searchTerm, 
+        searchPath as any, 
+        100,
+        searchOptions.content  // 내용 검색 옵션 전달
+      );
       
       addSearchLog(`✓ 검색 쿼리 파싱 완료`);
       addSearchLog(`📂 DB에서 파일 검색 중...`);
@@ -1928,15 +1988,24 @@ export default function App() {
         addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         
         // 파일 리스트 업데이트
-        const fileItems: FileItem[] = results.map(result => {
+        const fileItems: FileItem[] = results.map((result, idx) => {
           // matchType 결정: source 필드로 판단
           let matchType: 'filename' | 'content' | 'both' | undefined;
           if (result.source === 'filesystem') {
             matchType = 'filename';
           } else if (result.source === 'database') {
             matchType = 'content';
+          } else if (result.source === 'both') {
+            matchType = 'both';
           }
-          // 나중에 통합 검색 시 'both' 지원 가능
+          
+          // 디버깅: 첫 3개 파일의 경로 확인
+          if (idx < 3) {
+            console.log(`🔍 검색 결과 #${idx + 1}:`, result.name);
+            console.log(`   경로:`, result.path);
+            console.log(`   경로 길이:`, result.path?.length);
+            console.log(`   경로 타입:`, typeof result.path);
+          }
           
           return {
             name: result.name,
@@ -2866,7 +2935,7 @@ export default function App() {
                       style={{ userSelect: 'text' }}
                       onContextMenu={handleTextContextMenu}
                     >
-                      {fileContent}
+                      {highlightSearchTerms(fileContent, activeTab.searchText)}
                     </pre>
                   </div>
                 </div>
@@ -2976,12 +3045,12 @@ export default function App() {
                                 )}
                               </div>
                               <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded border border-[#2a2a2a] p-3">
-                                <pre 
-                                  className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" 
+                                <pre
+                                  className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text"
                                   style={{ userSelect: 'text' }}
                                   onContextMenu={handleTextContextMenu}
                                 >
-                                  {fileContent}
+                                  {highlightSearchTerms(fileContent, activeTab.searchText)}
                                 </pre>
                               </div>
                             </div>

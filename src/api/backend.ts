@@ -250,12 +250,14 @@ export async function searchFiles(
 export async function searchCombined(
   query: string,
   searchPath?: string | null,
-  maxResults: number = 100
+  maxResults: number = 100,
+  includeContent: boolean = true  // 내용 검색 포함 여부
 ): Promise<any> {
   try {
     const body: any = {
       query,
-      max_results: maxResults
+      max_results: maxResults,
+      include_content: includeContent  // 내용 검색 옵션 추가
     };
     
     // searchPath가 유효한 경우에만 포함

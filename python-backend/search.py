@@ -75,18 +75,19 @@ class SearchEngine:
         self.db = db_manager
     
     def search_combined(self, query: str, search_path: str = None, 
-                       max_results: int = 100) -> List[Dict]:
+                       max_results: int = 100, include_content: bool = True) -> List[Dict]:
         """
         통합 검색: 파일명 + 내용 검색
         
         1. 파일 시스템에서 파일명 검색 (재귀적)
-        2. DB에서 내용 검색
+        2. DB에서 내용 검색 (include_content=True인 경우만)
         3. 결과 통합 (중복 제거, DB 우선)
         
         Args:
             query: 검색 쿼리
             search_path: 검색할 경로 (None이면 전체)
             max_results: 최대 결과 개수
+            include_content: 내용 검색 포함 여부 (기본값: True)
         
         Returns:
             통합 검색 결과
@@ -112,8 +113,12 @@ class SearchEngine:
                         'indexed': is_indexed
                     }
             
-            # 2. 내용 검색 (DB)
-            content_results = self.search(query, max_results, include_content=True)
+            # 2. 내용 검색 (DB) - include_content=True인 경우만
+            if include_content:
+                content_results = self.search(query, max_results, include_content=True)
+            else:
+                content_results = []
+            
             for result in content_results:
                 path = result['path']
                 
@@ -122,16 +127,17 @@ class SearchEngine:
                     continue
                 
                 if path in results:
-                    # 중복: DB 결과로 대체 (우선순위)
+                    # 중복: 파일명과 내용 모두에 매칭 (both)
                     results[path] = {
                         **result,
-                        'source': 'database',
+                        'source': 'both',  # 파일명 + 내용 모두 매칭
                         'indexed': True
                     }
                 else:
+                    # 내용만 매칭
                     results[path] = {
                         **result,
-                        'source': 'database',
+                        'source': 'database',  # 내용만 매칭
                         'indexed': True
                     }
             
@@ -197,8 +203,8 @@ class SearchEngine:
                         # 정확한 문장 일치
                         matched = search_term in name_lower
                     else:
-                        # 모든 검색어 포함 (AND 조건)
-                        matched = all(term in name_lower for term in search_terms)
+                        # 적어도 하나의 검색어 포함 (OR 조건)
+                        matched = any(term in name_lower for term in search_terms)
                     
                     if matched:
                         dir_path = os.path.join(dirpath, dirname)
@@ -227,8 +233,8 @@ class SearchEngine:
                         # 정확한 문장 일치
                         matched = search_term in name_lower
                     else:
-                        # 모든 검색어 포함 (AND 조건)
-                        matched = all(term in name_lower for term in search_terms)
+                        # 적어도 하나의 검색어 포함 (OR 조건)
+                        matched = any(term in name_lower for term in search_terms)
                     
                     if matched:
                         file_path = os.path.join(dirpath, filename)
@@ -261,46 +267,47 @@ class SearchEngine:
     def parse_search_query(self, query: str) -> Dict:
         """
         검색어 파싱
-        
+
         규칙:
         - "문자열" → 정확 일치
-        - 단어1 단어2 → AND 조건
+        - 단어1 단어2 → OR 조건 (적어도 하나 포함)
         - 특수문자 이스케이프
-        
+
         Args:
             query: 원본 검색어
-        
+
         Returns:
             파싱된 검색 정보
         """
         import re
-        
+
         parsed = {
             'original': query,
             'exact_match': False,
             'terms': [],
             'escaped_query': ''
         }
-        
+
         # 정확 일치 검색 ("문자열")
         if query.startswith('"') and query.endswith('"'):
             parsed['exact_match'] = True
             parsed['terms'] = [query.strip('"')]
             parsed['escaped_query'] = query.strip('"')
         else:
-            # AND 조건 (공백으로 분리)
+            # OR 조건 (공백으로 분리)
             terms = query.split()
             parsed['terms'] = terms
-            
+
             # FTS5 특수문자 이스케이프
             escaped_terms = []
             for term in terms:
                 # FTS5 특수문자: - ( ) [ ] " *
                 escaped = re.sub(r'([-\(\)\[\]"\*])', r'\\\1', term)
                 escaped_terms.append(escaped)
-            
-            parsed['escaped_query'] = ' '.join(escaped_terms)
-        
+
+            # OR 조건으로 연결
+            parsed['escaped_query'] = ' OR '.join(escaped_terms)
+
         return parsed
     
     def search(self, query: str, max_results: int = 100, 
