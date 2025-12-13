@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 백엔드 Health Check 및 재시작
   checkBackendHealth: () => ipcRenderer.invoke('check-backend-health'),
   restartBackend: () => ipcRenderer.invoke('restart-backend'),
+  // 파일 시스템 작업
+  deleteFiles: (filePaths) => ipcRenderer.invoke('delete-files', filePaths),
+  copyFiles: (filePaths, destPath) => ipcRenderer.invoke('copy-files', filePaths, destPath),
   platform: process.platform,
   isElectron: true
 });

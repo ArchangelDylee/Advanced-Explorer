@@ -55,6 +55,7 @@ interface TabItem {
   selectedFolder: string; // Current Folder Name
   currentPath: string;    // Current Full Path
   selectedFile: FileItem | null;
+  selectedFiles: string[];  // 다중 선택된 파일 경로들 (Array로 JSON 직렬화 가능)
   files: FileItem[];      // Content of current folder
   sortConfig: SortConfig;
   // Navigation History
@@ -336,6 +337,7 @@ export default function App() {
     selectedFolder: initialFolder.name, 
     currentPath: initialFolder.path, 
     selectedFile: null, 
+    selectedFiles: [], 
     files: [], 
     sortConfig: { key: null, direction: 'asc' }, 
     history: [{ name: initialFolder.name, path: initialFolder.path }], 
@@ -594,6 +596,17 @@ export default function App() {
     };
     
     initializeDrives();
+  }, []);
+
+  // --- useEffect: Normalize tabs (add missing selectedFiles) ---
+  useEffect(() => {
+    const needsNormalization = tabs.some(tab => !tab.selectedFiles);
+    if (needsNormalization) {
+      setTabs(tabs.map(tab => ({
+        ...tab,
+        selectedFiles: tab.selectedFiles || []
+      })));
+    }
   }, []);
 
   // 프로그램 시작 시 초기 폴더 자동 선택 (항상 문서 → Root 순서)
@@ -1241,6 +1254,7 @@ export default function App() {
         title: folderName,
         files: rawContent,
         selectedFile: null,
+        selectedFiles: [],
         searchText: '',
         history: newHistory,
         historyIndex: newIndex
@@ -1281,6 +1295,7 @@ export default function App() {
           title: prev.name,
           files: rawContent,
           selectedFile: null,
+          selectedFiles: [],
           searchText: '',
           historyIndex: newIndex
         });
@@ -1321,6 +1336,7 @@ export default function App() {
           title: next.name,
           files: rawContent,
           selectedFile: null,
+          selectedFiles: [],
           searchText: '',
           historyIndex: newIndex
         });
@@ -2028,12 +2044,92 @@ export default function App() {
             </>
           )}
           
+          {/* 삭제 (다중 선택 지원) */}
+          <button 
+            className="w-full text-left px-3 py-1.5 hover:bg-red-600 hover:text-white flex items-center gap-2 group active:bg-red-700 transition-colors duration-75" 
+            onClick={async () => {
+              const selectedCount = (activeTab.selectedFiles || []).length;
+              const filesToDelete = selectedCount > 0 
+                ? activeTab.selectedFiles
+                : [contextMenu.target!.path];
+              
+              const confirmMsg = selectedCount > 0 
+                ? `선택한 ${selectedCount}개 파일을 휴지통으로 이동하시겠습니까?`
+                : `'${contextMenu.target!.name}'을(를) 휴지통으로 이동하시겠습니까?`;
+              
+              if (!confirm(confirmMsg)) return;
+              
+              try {
+                if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                  const result = await (window as any).electronAPI.deleteFiles(filesToDelete);
+                  
+                  if (result.success) {
+                    const successCount = result.results.filter((r: any) => r.success).length;
+                    addSearchLog(`✅ ${successCount}개 파일 삭제 완료`);
+                    
+                    // 파일 리스트에서 삭제된 파일 제거
+                    const deletedPaths = result.results.filter((r: any) => r.success).map((r: any) => r.path);
+                    const updatedFiles = activeTab.files.filter(f => !deletedPaths.includes(f.path || ''));
+                    updateActiveTab({ 
+                      files: updatedFiles, 
+                      selectedFile: null,
+                      selectedFiles: []
+                    });
+                  } else {
+                    addSearchLog(`❌ 삭제 실패: ${result.error}`);
+                  }
+                }
+              } catch (error) {
+                addSearchLog(`❌ 삭제 오류: ${error}`);
+              }
+            }}
+          >
+            <Trash2 size={14} className="text-gray-400 group-hover:text-white" /> 
+            삭제{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
+          </button>
+          
+          {/* 복사 (다중 선택 지원) */}
+          <button 
+            className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
+            onClick={async () => {
+              const selectedCount = (activeTab.selectedFiles || []).length;
+              const filesToCopy = selectedCount > 0 
+                ? activeTab.selectedFiles
+                : [contextMenu.target!.path];
+              
+              const destPath = activeTab.currentPath;
+              
+              try {
+                if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                  const result = await (window as any).electronAPI.copyFiles(filesToCopy, destPath);
+                  
+                  if (result.success) {
+                    const successCount = result.results.filter((r: any) => r.success).length;
+                    addSearchLog(`✅ ${successCount}개 파일 복사 완료`);
+                    
+                    // 파일 리스트 새로고침
+                    navigate(activeTab.selectedFolder, activeTab.currentPath);
+                  } else {
+                    addSearchLog(`❌ 복사 실패: ${result.error}`);
+                  }
+                }
+              } catch (error) {
+                addSearchLog(`❌ 복사 오류: ${error}`);
+              }
+            }}
+          >
+            <Copy size={14} className="text-gray-400 group-hover:text-white" /> 
+            복사{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
+          </button>
+          
+          <div className="h-px bg-[#444] my-1"></div>
+          
           <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { 
             const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
             navigator.clipboard.writeText(dirPath); 
             addSearchLog(`경로 복사됨: ${dirPath}`); 
           }}>
-            <Copy size={14} className="text-gray-400 group-hover:text-white" /> 경로 복사
+            <Clipboard size={14} className="text-gray-400 group-hover:text-white" /> 경로 복사
           </button>
           <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.name); addSearchLog('이름 복사됨'); }}>
             <FileText size={14} className="text-gray-400 group-hover:text-white" /> 이름 복사
@@ -2059,12 +2155,13 @@ export default function App() {
             searchText: '', 
             selectedFolder: newFolder.name, 
             currentPath: newFolder.path, 
-            selectedFile: null, 
-            files: [], 
-            sortConfig: {key:null, direction:'asc'}, 
-            history: [{name: newFolder.name, path: newFolder.path}], 
-            historyIndex: 0 
-          }]); 
+            selectedFile: null,
+            selectedFiles: [],
+            files: [],
+            sortConfig: {key:null, direction:'asc'},
+            history: [{name: newFolder.name, path: newFolder.path}],
+            historyIndex: 0
+          }]);
           setNextTabId(id+1); 
           setActiveTabId(id); 
         }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
@@ -2206,17 +2303,52 @@ export default function App() {
               <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs flex-1" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
             </div>
             {/* List */}
-            <div className="flex-1 overflow-y-auto" onClick={() => updateActiveTab({ selectedFile: null })}>
+            <div className="flex-1 overflow-y-auto" onClick={() => updateActiveTab({ selectedFile: null, selectedFiles: [] })}>
               <div className="min-w-max">
                 {activeTab.files.map((file, i) => {
                   const { Icon: FileIcon, color: iconColor } = getFileIconProps(file);
-                  const isSelected = activeTab.selectedFile?.name === file.name;
+                  const isSelected = activeTab.selectedFile?.name === file.name || (activeTab.selectedFiles || []).includes(file.path || '');
                   return (
-                    <div 
-                      key={i} 
+                    <div
+                      key={i}
                       // 수평선(border-b) 제거
                       className={`flex h-7 items-center cursor-default text-xs active:bg-[#383838] transition-colors duration-75 ${isSelected ? 'bg-[#333] text-white' : 'text-[#D0D0D0] hover:bg-[#2A2A2A]'}`}
-                      onClick={(e) => { e.stopPropagation(); updateActiveTab({ selectedFile: file }); }}
+                      onClick={(e) => { 
+                        e.stopPropagation(); 
+                        
+                        if (!file.path) {
+                          updateActiveTab({ selectedFile: file });
+                          return;
+                        }
+                        
+                        // Ctrl 클릭: 다중 선택 토글
+                        if (e.ctrlKey) {
+                          const currentSelected = activeTab.selectedFiles || [];
+                          const newSelected = currentSelected.includes(file.path)
+                            ? currentSelected.filter(p => p !== file.path)
+                            : [...currentSelected, file.path];
+                          updateActiveTab({ selectedFiles: newSelected, selectedFile: file });
+                        }
+                        // Shift 클릭: 범위 선택
+                        else if (e.shiftKey && activeTab.selectedFile) {
+                          const lastIndex = activeTab.files.findIndex(f => f.path === activeTab.selectedFile?.path);
+                          const currentIndex = i;
+                          const start = Math.min(lastIndex, currentIndex);
+                          const end = Math.max(lastIndex, currentIndex);
+                          
+                          const newSelected: string[] = [];
+                          for (let idx = start; idx <= end; idx++) {
+                            if (activeTab.files[idx].path) {
+                              newSelected.push(activeTab.files[idx].path!);
+                            }
+                          }
+                          updateActiveTab({ selectedFiles: newSelected, selectedFile: file });
+                        }
+                        // 일반 클릭: 단일 선택
+                        else {
+                          updateActiveTab({ selectedFile: file, selectedFiles: [] });
+                        }
+                      }}
                       onDoubleClick={async () => {
                         if (file.type === 'folder') {
                           navigate(file.name, file.path || `...\\${file.name}`);

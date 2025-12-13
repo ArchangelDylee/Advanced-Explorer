@@ -600,13 +600,13 @@ class DatabaseManager:
     
     def get_all_indexed_paths(self) -> List[str]:
         """
-        인덱싱된 모든 파일 경로 조회
+        인덱싱된 모든 파일 경로 조회 (삭제되지 않은 파일만)
         
         Returns:
             파일 경로 리스트
         """
         try:
-            cursor = self.conn.execute("SELECT path FROM files_fts")
+            cursor = self.conn.execute("SELECT path FROM files_fts WHERE deleted = '0'")
             return [row['path'] for row in cursor.fetchall()]
         except sqlite3.Error as e:
             logger.error(f"경로 조회 오류: {e}")

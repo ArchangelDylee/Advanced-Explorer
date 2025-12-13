@@ -90,7 +90,7 @@ function createWindow() {
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
     // 개발자 도구 자동 열기 (필요시 주석 해제)
-    mainWindow.webContents.openDevTools();
+    // mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
@@ -905,3 +905,93 @@ ipcMain.handle('restart-backend', async () => {
     };
   }
 });
+
+// 파일/폴더 삭제 (휴지통으로)
+ipcMain.handle('delete-files', async (event, filePaths) => {
+  try {
+    const results = [];
+    for (const filePath of filePaths) {
+      try {
+        await shell.trashItem(filePath);
+        console.log(`✅ 삭제 완료 (휴지통): ${filePath}`);
+        results.push({ path: filePath, success: true });
+      } catch (error) {
+        console.error(`❌ 삭제 실패: ${filePath}`, error);
+        results.push({ path: filePath, success: false, error: error.message });
+      }
+    }
+    return { success: true, results };
+  } catch (error) {
+    console.error('파일 삭제 오류:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 파일/폴더 복사
+ipcMain.handle('copy-files', async (event, filePaths, destPath) => {
+  const fs = require('fs').promises;
+  const pathModule = require('path');
+  
+  try {
+    const results = [];
+    for (const srcPath of filePaths) {
+      try {
+        const fileName = pathModule.basename(srcPath);
+        let destFilePath = pathModule.join(destPath, fileName);
+        
+        // 같은 이름의 파일이 있으면 (사본) 추가
+        let counter = 1;
+        const parsedPath = pathModule.parse(destFilePath);
+        while (await fs.access(destFilePath).then(() => true).catch(() => false)) {
+          destFilePath = pathModule.join(
+            parsedPath.dir,
+            `${parsedPath.name} (사본 ${counter})${parsedPath.ext}`
+          );
+          counter++;
+        }
+        
+        // 파일인지 폴더인지 확인
+        const stats = await fs.stat(srcPath);
+        
+        if (stats.isDirectory()) {
+          // 폴더 복사 (재귀적)
+          await copyDirectory(srcPath, destFilePath);
+          console.log(`✅ 폴더 복사 완료: ${srcPath} → ${destFilePath}`);
+        } else {
+          // 파일 복사
+          await fs.copyFile(srcPath, destFilePath);
+          console.log(`✅ 파일 복사 완료: ${srcPath} → ${destFilePath}`);
+        }
+        
+        results.push({ path: srcPath, success: true, dest: destFilePath });
+      } catch (error) {
+        console.error(`❌ 복사 실패: ${srcPath}`, error);
+        results.push({ path: srcPath, success: false, error: error.message });
+      }
+    }
+    return { success: true, results };
+  } catch (error) {
+    console.error('파일 복사 오류:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 재귀적 폴더 복사 헬퍼 함수
+async function copyDirectory(src, dest) {
+  const fs = require('fs').promises;
+  const pathModule = require('path');
+  
+  await fs.mkdir(dest, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  
+  for (const entry of entries) {
+    const srcPath = pathModule.join(src, entry.name);
+    const destPath = pathModule.join(dest, entry.name);
+    
+    if (entry.isDirectory()) {
+      await copyDirectory(srcPath, destPath);
+    } else {
+      await fs.copyFile(srcPath, destPath);
+    }
+  }
+}
