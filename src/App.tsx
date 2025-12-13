@@ -20,6 +20,7 @@ interface FileItem {
   indexed?: boolean; // 인덱싱 여부
   skipped?: boolean; // Skip 여부
   skipReason?: string; // Skip 사유
+  matchType?: 'filename' | 'content' | 'both'; // 검색 매칭 타입
 }
 
 interface FolderNode {
@@ -800,7 +801,7 @@ export default function App() {
               
               // OCR된 텍스트 로드 (인덱싱되어 있으면)
               try {
-                const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
+                const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
                 if (detail && detail.content) {
                   console.log('✅ OCR 텍스트 로드 성공');
                   setFileContent(detail.content);
@@ -875,7 +876,7 @@ export default function App() {
           console.log('📄 문서 파일 선택:', activeTab.selectedFile.path);
           
           try {
-            const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
+            const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
             console.log('📦 API 응답:', detail);
             
             if (detail && detail.content) {
@@ -912,7 +913,7 @@ export default function App() {
                     
                     // 다시 조회 시도
                     try {
-                      const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
+                      const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
                       if (detail && detail.content) {
                         setFileContent(detail.content);
                         console.log('✅ 재조회 성공!');
@@ -991,11 +992,11 @@ export default function App() {
   // 인덱싱 로그에서 파일 클릭 시 인덱스 내용 표시
   const handleIndexLogClick = async (filePath: string) => {
     console.log('🔍 인덱스 파일 클릭:', filePath);
-    
+
     try {
-      const detail = await BackendAPI.getIndexedFileDetail(filePath);
+      const detail = await BackendAPI.getIndexedContent(filePath);
       console.log('📦 API 응답:', detail);
-      
+
       if (detail && detail.content) {
         setFileContent(detail.content);
         setFileSummary(null); // 요약 초기화
@@ -1927,22 +1928,34 @@ export default function App() {
         addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         
         // 파일 리스트 업데이트
-        const fileItems: FileItem[] = results.map(result => ({
-          name: result.name,
-          size: result.size ? `${(result.size / 1024).toFixed(1)} KB` : '-',
-          date: result.mtime ? new Date(result.mtime).toLocaleString('ko-KR', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false
-          }) : '-',
-          type: result.extension || 'file',
-          path: result.path,
-          indexed: result.indexed || false  // 인덱싱 여부 추가
-        }));
+        const fileItems: FileItem[] = results.map(result => {
+          // matchType 결정: source 필드로 판단
+          let matchType: 'filename' | 'content' | 'both' | undefined;
+          if (result.source === 'filesystem') {
+            matchType = 'filename';
+          } else if (result.source === 'database') {
+            matchType = 'content';
+          }
+          // 나중에 통합 검색 시 'both' 지원 가능
+          
+          return {
+            name: result.name,
+            size: result.size ? `${(result.size / 1024).toFixed(1)} KB` : '-',
+            date: result.mtime ? new Date(result.mtime).toLocaleString('ko-KR', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false
+            }) : '-',
+            type: result.extension || 'file',
+            path: result.path,
+            indexed: result.indexed || false,  // 인덱싱 여부 추가
+            matchType: matchType  // 매칭 타입 추가
+          };
+        });
         
         updateActiveTab({ files: fileItems });
         setIsSearching(false);
@@ -2641,6 +2654,22 @@ export default function App() {
                       <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden border-r border-dotted border-[#2a2a2a]">
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
                         <span className="truncate">{file.name}</span>
+                        {file.matchType && (
+                          <span 
+                            className="ml-2 px-1.5 py-0.5 flex-shrink-0 text-[9px] font-bold rounded"
+                            style={{
+                              backgroundColor: file.matchType === 'filename' ? '#3b82f6' : file.matchType === 'content' ? '#10b981' : '#8b5cf6',
+                              color: 'white'
+                            }}
+                            title={
+                              file.matchType === 'filename' ? '파일명에서 검색어 발견' : 
+                              file.matchType === 'content' ? '파일 내용에서 검색어 발견' : 
+                              '파일명과 내용 모두에서 검색어 발견'
+                            }
+                          >
+                            {file.matchType === 'filename' ? '파일명' : file.matchType === 'content' ? '내용만' : '파일.내용'}
+                          </span>
+                        )}
                         {file.indexed !== undefined && (
                           <span 
                             className="ml-2 flex-shrink-0" 

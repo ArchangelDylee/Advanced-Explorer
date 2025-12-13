@@ -99,8 +99,8 @@ function createWindow() {
           if (response.ok) {
             console.log('✅ Vite 서버 연결 성공');
             mainWindow.loadURL('http://localhost:5173');
-            // 개발자 도구 자동 열기 (디버깅용)
-            mainWindow.webContents.openDevTools();
+            // 개발자 도구는 수동으로 열기 (F12 또는 Ctrl+Shift+I)
+            // mainWindow.webContents.openDevTools();
             return;
           }
         } catch (error) {

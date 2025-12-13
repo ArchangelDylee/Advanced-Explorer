@@ -16,9 +16,9 @@ function createWindow() {
 
   // Vite 개발 서버에 연결
   mainWindow.loadURL('http://localhost:5173');
-  
-  // 개발자 도구 열기
-  mainWindow.webContents.openDevTools();
+
+  // 개발자 도구는 수동으로 열기 (F12 또는 Ctrl+Shift+I)
+  // mainWindow.webContents.openDevTools();
 
   mainWindow.on('closed', () => {
     mainWindow = null;
