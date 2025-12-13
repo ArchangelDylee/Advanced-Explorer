@@ -552,7 +552,7 @@ class DatabaseManager:
     
     def get_all_indexed_paths(self, limit: int = 10000) -> List[str]:
         """
-        인덱스된 모든 파일 경로 조회 (디버깅용)
+        인덱싱된 모든 파일 경로 조회 (삭제되지 않은 파일만)
         
         Args:
             limit: 조회할 최대 개수
@@ -561,7 +561,7 @@ class DatabaseManager:
             파일 경로 리스트
         """
         try:
-            cursor = self.conn.execute(f"SELECT path FROM files_fts LIMIT {limit}")
+            cursor = self.conn.execute(f"SELECT path FROM files_fts WHERE deleted = '0' LIMIT {limit}")
             return [row['path'] for row in cursor.fetchall()]
         except sqlite3.Error as e:
             logger.error(f"파일 경로 조회 오류: {e}")
@@ -597,20 +597,6 @@ class DatabaseManager:
             logger.info("데이터베이스 VACUUM 완료")
         except sqlite3.Error as e:
             logger.error(f"VACUUM 오류: {e}")
-    
-    def get_all_indexed_paths(self) -> List[str]:
-        """
-        인덱싱된 모든 파일 경로 조회 (삭제되지 않은 파일만)
-        
-        Returns:
-            파일 경로 리스트
-        """
-        try:
-            cursor = self.conn.execute("SELECT path FROM files_fts WHERE deleted = '0'")
-            return [row['path'] for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            logger.error(f"경로 조회 오류: {e}")
-            return []
     
     def get_all_indexed_files(self, limit: int = 1000, offset: int = 0) -> List[dict]:
         """

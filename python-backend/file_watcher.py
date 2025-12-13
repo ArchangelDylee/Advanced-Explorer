@@ -50,7 +50,11 @@ class IndexedFileWatcher(FileSystemEventHandler):
             bool: 지원 여부
         """
         ext = os.path.splitext(file_path)[1].lower()
-        supported_exts = self.indexer.SUPPORTED_TEXT_EXTENSIONS | self.indexer.SUPPORTED_DOC_EXTENSIONS
+        supported_exts = (
+            self.indexer.SUPPORTED_TEXT_EXTENSIONS | 
+            self.indexer.SUPPORTED_DOC_EXTENSIONS | 
+            self.indexer.SUPPORTED_IMAGE_EXTENSIONS
+        )
         return ext in supported_exts
     
     def _should_exclude(self, file_path: str) -> bool:

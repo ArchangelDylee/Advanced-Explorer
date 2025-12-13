@@ -281,34 +281,49 @@ let indexingStateBeforeSleep = null;
  */
 async function checkBackendHealth() {
   try {
-    const response = await fetch('http://127.0.0.1:5000/api/health', {
-      method: 'GET',
-      timeout: 5000
-    });
+    // AbortController로 타임아웃 구현
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     
-    if (response.ok) {
-      const data = await response.json();
+    try {
+      const response = await fetch('http://127.0.0.1:5000/api/health', {
+        method: 'GET',
+        signal: controller.signal
+      });
       
-      // 'ok'와 'degraded' 모두 허용 (서버가 응답하고 있으면 재시작 불필요)
-      // 'degraded'는 일부 컴포넌트에 문제가 있지만 서버는 정상 작동 중
-      if (data.status === 'ok') {
-        return true;
-      } else if (data.status === 'degraded') {
-        console.warn('⚠️ 백엔드 상태: degraded (일부 컴포넌트 오류)');
-        if (data.components) {
-          Object.keys(data.components).forEach(component => {
-            if (data.components[component].status === 'error') {
-              console.warn(`  - ${component}: ${data.components[component].message || 'error'}`);
-            }
-          });
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // 'ok'와 'degraded' 모두 허용 (서버가 응답하고 있으면 재시작 불필요)
+        // 'degraded'는 일부 컴포넌트에 문제가 있지만 서버는 정상 작동 중
+        if (data.status === 'ok') {
+          return true;
+        } else if (data.status === 'degraded') {
+          console.warn('⚠️ 백엔드 상태: degraded (일부 컴포넌트 오류)');
+          if (data.components) {
+            Object.keys(data.components).forEach(component => {
+              if (data.components[component].status === 'error') {
+                console.warn(`  - ${component}: ${data.components[component].message || 'error'}`);
+              }
+            });
+          }
+          return true; // 서버는 응답 중이므로 재시작 불필요
         }
-        return true; // 서버는 응답 중이므로 재시작 불필요
+        return false;
       }
       return false;
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      throw fetchError;
     }
-    return false;
   } catch (error) {
-    console.error('❌ Health Check 실패:', error.message);
+    if (error.name === 'AbortError') {
+      console.error('❌ Health Check 타임아웃 (5초)');
+    } else {
+      console.error('❌ Health Check 실패:', error.message);
+    }
     return false;
   }
 }
