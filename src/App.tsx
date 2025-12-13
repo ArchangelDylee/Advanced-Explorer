@@ -5,7 +5,7 @@ import {
   ChevronRight, ChevronDown, Image as ImageIcon,
   ArrowUp, ArrowDown, Clock, X, Plus,
   FileSpreadsheet, FileCode, FileArchive, LayoutTemplate,
-  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity, RefreshCw, Settings, Key
+  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity, RefreshCw
 } from 'lucide-react';
 import * as BackendAPI from './api/backend';
 
@@ -357,8 +357,6 @@ export default function App() {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileSummary, setFileSummary] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
-  const [isGPTSummarizing, setIsGPTSummarizing] = useState(false);
-  const [gptApiKey, setGptApiKey] = useLocalStorage<string>('gptApiKey', '');
   const [isSearching, setIsSearching] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
   const [isIndexStopping, setIsIndexStopping] = useState(false);
@@ -366,8 +364,6 @@ export default function App() {
   const [indexingStats, setIndexingStats] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, target: null });
   const [textContextMenu, setTextContextMenu] = useState<{ visible: boolean; x: number; y: number; selectedText: string }>({ visible: false, x: 0, y: 0, selectedText: '' });
-  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
-  const [tempApiKey, setTempApiKey] = useState('');
   
   // AbortController refs for cancelling pending requests
   const statusAbortControllerRef = React.useRef<AbortController | null>(null);
@@ -724,7 +720,7 @@ export default function App() {
               
               // OCR된 텍스트 로드 (인덱싱되어 있으면)
               try {
-                const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
                 if (detail && detail.content) {
                   console.log('✅ OCR 텍스트 로드 성공');
                   setFileContent(detail.content);
@@ -799,7 +795,7 @@ export default function App() {
           console.log('📄 문서 파일 선택:', activeTab.selectedFile.path);
           
           try {
-            const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+            const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
             console.log('📦 API 응답:', detail);
             
             if (detail && detail.content) {
@@ -836,7 +832,7 @@ export default function App() {
                     
                     // 다시 조회 시도
                     try {
-                      const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                      const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
                       if (detail && detail.content) {
                         setFileContent(detail.content);
                         console.log('✅ 재조회 성공!');
@@ -951,59 +947,25 @@ export default function App() {
 
     try {
       setIsSummarizing(true);
-      addSearchLog(`🔄 로컬 요약 생성 중 (TextRank): ${activeTab.selectedFile.name}`);
+      addSearchLog(`🔄 내용 요약 생성 중 (TextRank): ${activeTab.selectedFile.name}`);
 
       const result = await BackendAPI.summarizeFile(activeTab.selectedFile.path, 5);
 
       if (result.success && result.summary) {
         setFileSummary(result.summary);
-        addSearchLog(`✓ 로컬 요약 완료: ${result.original_length}자 → ${result.summary_length}자 (${result.compression_ratio})`);
+        addSearchLog(`✓ 내용 요약 완료: ${result.original_length}자 → ${result.summary_length}자 (${result.compression_ratio})`);
       } else {
         setFileSummary(null);
-        addSearchLog(`❌ 로컬 요약 실패: ${result.error || '알 수 없는 오류'}`);
+        addSearchLog(`❌ 내용 요약 실패: ${result.error || '알 수 없는 오류'}`);
       }
     } catch (error) {
-      console.error('로컬 요약 오류:', error);
-      addSearchLog(`❌ 로컬 요약 오류: ${error}`);
+      console.error('내용 요약 오류:', error);
+      addSearchLog(`❌ 내용 요약 오류: ${error}`);
     } finally {
       setIsSummarizing(false);
     }
   };
 
-  // 파일 내용 요약 (GPT API)
-  const handleGPTSummarize = async () => {
-    if (!activeTab.selectedFile?.path) {
-      addSearchLog('⚠️ 파일을 선택해주세요');
-      return;
-    }
-
-    if (!gptApiKey) {
-      addSearchLog('⚠️ GPT API Key를 입력해주세요');
-      setTempApiKey('');
-      setShowApiKeyDialog(true);
-      return;
-    }
-
-    try {
-      setIsGPTSummarizing(true);
-      addSearchLog(`🤖 GPT 요약 생성 중: ${activeTab.selectedFile.name}`);
-
-      const result = await BackendAPI.summarizeFileWithGPT(activeTab.selectedFile.path, gptApiKey);
-
-      if (result.success && result.summary) {
-        setFileSummary(result.summary);
-        addSearchLog(`✓ GPT 요약 완료: ${result.original_length}자 → ${result.summary_length}자 (${result.compression_ratio})`);
-      } else {
-        setFileSummary(null);
-        addSearchLog(`❌ GPT 요약 실패: ${result.error || '알 수 없는 오류'}`);
-      }
-    } catch (error) {
-      console.error('GPT 요약 오류:', error);
-      addSearchLog(`❌ GPT 요약 오류: ${error}`);
-    } finally {
-      setIsGPTSummarizing(false);
-    }
-  };
 
   // 텍스트 컨텍스트 메뉴 핸들러
   const handleTextContextMenu = (e: React.MouseEvent) => {
@@ -1457,7 +1419,7 @@ export default function App() {
               const stats = await BackendAPI.getStatistics();
               setDbTotalCount(stats.total_indexed_files);
             } catch (error) {
-              if (error.name !== 'AbortError') {
+              if (error instanceof Error && error.name !== 'AbortError') {
                 console.error('통계 조회 오류:', error);
               }
             }
@@ -1475,7 +1437,7 @@ export default function App() {
                   time: log.time,
                   path: log.path || log.filename,  // 전체 경로 사용
                   filename: log.filename,           // 파일명도 저장
-                  status: log.status,
+                  status: log.status as IndexLogEntry['status'],
                   size: log.detail
                 }));
                 
@@ -1493,7 +1455,7 @@ export default function App() {
                   const latestLogsMap = new Map<string, IndexLogEntry>();
                   mappedLogs.forEach(log => {
                     // 이미 존재하지 않을 때만 추가 (먼저 나온 것이 최신)
-                    if (!latestLogsMap.has(log.path)) {
+                    if (log.path && !latestLogsMap.has(log.path)) {
                       latestLogsMap.set(log.path, log);
                     }
                   });
@@ -1523,7 +1485,7 @@ export default function App() {
                 });
               }
             } catch (error) {
-              if (error.name !== 'AbortError') {
+              if (error instanceof Error && error.name !== 'AbortError') {
                 console.error('로그 조회 오류:', error);
               }
             }
@@ -1550,7 +1512,7 @@ export default function App() {
               setIndexingStatus(`인덱싱 중... (${status.stats.indexed_files}/${status.stats.total_files})`);
             }
           } catch (error) {
-            if (error.name !== 'AbortError') {
+            if (error instanceof Error && error.name !== 'AbortError') {
               console.error('인덱싱 상태 확인 오류:', error);
             }
           }
@@ -2027,76 +1989,6 @@ export default function App() {
         </div>
       )}
 
-      {/* --- API Key Setting Dialog --- */}
-      {showApiKeyDialog && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-[500px] bg-[#202020] border border-[#444] rounded-lg shadow-2xl p-5 transform scale-100">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center shrink-0">
-                <Key className="text-purple-500" size={20} />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-white">GPT API Key 설정</h3>
-                <p className="text-xs text-gray-400 mt-1">OpenAI API Key를 입력하세요</p>
-              </div>
-            </div>
-            
-            <div className="space-y-3 mb-4">
-              <div>
-                <label className="text-xs text-gray-400 mb-1 block">API Key</label>
-                <input
-                  type="password"
-                  placeholder="sk-proj-..."
-                  value={tempApiKey}
-                  onChange={(e) => setTempApiKey(e.target.value)}
-                  className="w-full px-3 py-2 bg-[#2C2C2C] border border-[#444] text-white rounded text-sm focus:outline-none focus:border-purple-500"
-                  autoFocus
-                />
-              </div>
-              
-              <div className="bg-[#2C2C2C] border border-[#444] rounded p-3">
-                <p className="text-xs text-gray-400 mb-2">📍 API Key 발급 방법:</p>
-                <ol className="text-xs text-gray-400 space-y-1 pl-4">
-                  <li>1. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">platform.openai.com/api-keys</a> 방문</li>
-                  <li>2. "Create new secret key" 클릭</li>
-                  <li>3. 이름 입력 후 "Create" 클릭</li>
-                  <li>4. API Key 복사 (다시 볼 수 없음!)</li>
-                </ol>
-                <p className="text-xs text-yellow-400 mt-2">💡 첫 가입 시 $5 무료 크레딧 제공!</p>
-              </div>
-            </div>
-            
-            <div className="flex justify-end gap-2">
-              <button 
-                onClick={() => {
-                  setShowApiKeyDialog(false);
-                  setTempApiKey('');
-                }} 
-                className="px-4 py-1.5 bg-[#333] hover:bg-[#444] rounded border border-[#555] text-white transition-colors active:scale-95 duration-100"
-              >
-                취소
-              </button>
-              <button 
-                onClick={() => {
-                  if (tempApiKey.trim()) {
-                    setGptApiKey(tempApiKey.trim());
-                    addSearchLog('✓ GPT API Key 저장 완료');
-                  } else {
-                    setGptApiKey('');
-                    addSearchLog('GPT API Key 제거됨');
-                  }
-                  setShowApiKeyDialog(false);
-                  setTempApiKey('');
-                }} 
-                className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 rounded text-white transition-colors active:scale-95 duration-100"
-              >
-                저장
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* --- Context Menu --- */}
       {contextMenu.visible && contextMenu.target && (
         <div className="fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
@@ -2160,7 +2052,7 @@ export default function App() {
         ))}
         <button onClick={() => { 
           const id = nextTabId; 
-          const newFolder = getInitialFolder();
+          const newFolder = initialFolder;
           setTabs([...tabs, { 
             id, 
             title: newFolder.name, 
@@ -2216,17 +2108,6 @@ export default function App() {
           <Checkbox label="내용 포함" checked={searchOptions.content} onChange={(v) => setSearchOptions(p => ({...p, content: v}))} />
           <Checkbox label="하위 폴더" checked={searchOptions.subfolder} onChange={(v) => setSearchOptions(p => ({...p, subfolder: v}))} />
           <div className="flex-1" />
-          <button
-            onClick={() => {
-              setTempApiKey(gptApiKey);
-              setShowApiKeyDialog(true);
-            }}
-            className="flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-[#2C2C2C] border border-[#444] text-[#D0D0D0] hover:bg-[#333] hover:border-[#0067C0] transition-all active:scale-95"
-            title="GPT API Key 설정"
-          >
-            <Key size={14} />
-            {gptApiKey ? '🔑 API Key 설정됨' : 'API Key 설정'}
-          </button>
         </div>
 
         {/* Row 2: Indexing & Filters */}
@@ -2411,13 +2292,15 @@ export default function App() {
                     try {
                       // 선택한 파일이 있으면 해당 파일만, 없으면 전체 조회
                       if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
-                        const fileDetail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                        const fileDetail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
                         if (fileDetail) {
                           // 선택한 파일의 정보를 배열로 변환하여 표시
                           setIndexedDatabase([{
                             path: fileDetail.path,
+                            content_preview: fileDetail.content.substring(0, 200),
                             content_length: fileDetail.content_length,
-                            mtime: fileDetail.mtime
+                            mtime: fileDetail.mtime,
+                            mtime_formatted: fileDetail.mtime_formatted
                           }]);
                           setDbTotalCount(1);
                         } else {
@@ -2521,52 +2404,28 @@ export default function App() {
                           ✓ 인덱싱 DB에서 불러온 내용
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={handleSummarize}
-                          disabled={isSummarizing || isGPTSummarizing}
-                          className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                            isSummarizing || isGPTSummarizing
-                              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                              : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
-                          }`}
-                          title="로컬 TextRank 알고리즘으로 요약 (무료)"
-                        >
-                          {isSummarizing ? (
-                            <>
-                              <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                              로컬 요약 중...
-                            </>
-                          ) : (
-                            <>
-                              <FileText size={12} />
-                              로컬 요약
-                            </>
-                          )}
-                        </button>
-                        <button
-                          onClick={handleGPTSummarize}
-                          disabled={isSummarizing || isGPTSummarizing}
-                          className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                            isSummarizing || isGPTSummarizing
-                              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                              : 'bg-purple-600 hover:bg-purple-500 text-white active:scale-95'
-                          }`}
-                          title="GPT-4o-mini API로 요약 (API Key 필요)"
-                        >
-                          {isGPTSummarizing ? (
-                            <>
-                              <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                              GPT 요약 중...
-                            </>
-                          ) : (
-                            <>
-                              🤖
-                              GPT 요약
-                            </>
-                          )}
-                        </button>
-                      </div>
+                      <button
+                        onClick={handleSummarize}
+                        disabled={isSummarizing}
+                        className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                          isSummarizing
+                            ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                        }`}
+                        title="TextRank 알고리즘으로 요약"
+                      >
+                        {isSummarizing ? (
+                          <>
+                            <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                            요약 중...
+                          </>
+                        ) : (
+                          <>
+                            <FileText size={12} />
+                            내용요약
+                          </>
+                        )}
+                      </button>
                     </div>
                   </div>
                   
@@ -2641,52 +2500,28 @@ export default function App() {
                               </div>
                             </div>
                             {fileContent && !fileContent.includes('⚠️') && (
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={handleSummarize}
-                                  disabled={isSummarizing || isGPTSummarizing}
-                                  className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                                    isSummarizing || isGPTSummarizing
-                                      ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                                      : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
-                                  }`}
-                                  title="로컬 TextRank 알고리즘으로 요약"
-                                >
-                                  {isSummarizing ? (
-                                    <>
-                                      <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                                      로컬 요약 중...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <FileText size={12} />
-                                      로컬 요약
-                                    </>
-                                  )}
-                                </button>
-                                <button
-                                  onClick={handleGPTSummarize}
-                                  disabled={isSummarizing || isGPTSummarizing}
-                                  className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                                    isSummarizing || isGPTSummarizing
-                                      ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                                      : 'bg-purple-600 hover:bg-purple-500 text-white active:scale-95'
-                                  }`}
-                                  title="GPT-4o-mini API로 요약"
-                                >
-                                  {isGPTSummarizing ? (
-                                    <>
-                                      <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                                      GPT 요약 중...
-                                    </>
-                                  ) : (
-                                    <>
-                                      🤖
-                                      GPT 요약
-                                    </>
-                                  )}
-                                </button>
-                              </div>
+                              <button
+                                onClick={handleSummarize}
+                                disabled={isSummarizing}
+                                className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                                  isSummarizing
+                                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                    : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                                }`}
+                                title="TextRank 알고리즘으로 요약"
+                              >
+                                {isSummarizing ? (
+                                  <>
+                                    <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                                    요약 중...
+                                  </>
+                                ) : (
+                                  <>
+                                    <FileText size={12} />
+                                    내용요약
+                                  </>
+                                )}
+                              </button>
                             )}
                           </div>
                         </div>
