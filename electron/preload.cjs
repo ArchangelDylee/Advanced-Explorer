@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 시스템 작업
   deleteFiles: (filePaths) => ipcRenderer.invoke('delete-files', filePaths),
   copyFiles: (filePaths, destPath) => ipcRenderer.invoke('copy-files', filePaths, destPath),
+  renameFile: (oldPath, newName) => ipcRenderer.invoke('rename-file', oldPath, newName),
   platform: process.platform,
   isElectron: true
 });

@@ -976,6 +976,38 @@ ipcMain.handle('copy-files', async (event, filePaths, destPath) => {
   }
 });
 
+// 파일/폴더 이름 바꾸기
+ipcMain.handle('rename-file', async (event, oldPath, newName) => {
+  const fs = require('fs').promises;
+  const pathModule = require('path');
+  
+  try {
+    // 새 경로 생성 (같은 디렉토리 내에서 이름만 변경)
+    const dirPath = pathModule.dirname(oldPath);
+    const newPath = pathModule.join(dirPath, newName);
+    
+    // 같은 이름이면 무시
+    if (oldPath === newPath) {
+      return { success: true, message: '변경 사항 없음' };
+    }
+    
+    // 이미 존재하는 이름인지 확인
+    const exists = await fs.access(newPath).then(() => true).catch(() => false);
+    if (exists) {
+      return { success: false, error: '이미 존재하는 이름입니다' };
+    }
+    
+    // 이름 변경
+    await fs.rename(oldPath, newPath);
+    console.log(`✅ 이름 변경 완료: ${oldPath} → ${newPath}`);
+    
+    return { success: true, oldPath, newPath };
+  } catch (error) {
+    console.error('이름 변경 오류:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 // 재귀적 폴더 복사 헬퍼 함수
 async function copyDirectory(src, dest) {
   const fs = require('fs').promises;

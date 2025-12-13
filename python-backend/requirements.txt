@@ -36,10 +36,9 @@ nltk==3.8.1
 numpy==1.24.3            # sumy 의존성
 
 # OCR (광학 문자 인식) - 이미지/스캔 PDF 처리
-pytesseract==0.3.10      # Tesseract OCR Python wrapper
-# Note: Tesseract OCR 엔진을 별도로 설치해야 합니다
-# 다운로드: https://github.com/UB-Mannheim/tesseract/wiki
-# 설치 후 환경변수나 코드에서 경로 설정 필요
+easyocr==1.7.0          # EasyOCR - 별도 설치 불필요, 한글 지원
+# Note: 첫 실행 시 모델 자동 다운로드 (약 50MB)
+Pillow==10.1.0          # 이미지 파일 읽기
 
 # 이미지 캡셔닝 (AI 이미지 묘사) - 로컬 AI 모델
 transformers==4.36.2     # Hugging Face Transformers (BLIP 모델)

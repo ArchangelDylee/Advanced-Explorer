@@ -21,6 +21,7 @@ import tempfile
 
 # 텍스트 추출 라이브러리
 import chardet  # 인코딩 자동 감지
+import numpy as np  # 이미지 처리용
 
 # 사용자 입력 감지 (키보드/마우스)
 try:
@@ -73,6 +74,27 @@ try:
 except ImportError:
     OLEFILE_AVAILABLE = False
     logging.warning("olefile not installed. Alternative .hwp support disabled.")
+
+try:
+    import easyocr
+    from PIL import Image, ExifTags
+    OCR_AVAILABLE = True
+    # EasyOCR 리더 초기화 (한글+영어)
+    ocr_reader = None  # 첫 사용 시 초기화 (Lazy Loading)
+except ImportError:
+    OCR_AVAILABLE = False
+    logging.warning("easyocr or Pillow not installed. Image OCR support disabled.")
+
+try:
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    import torch
+    BLIP_AVAILABLE = True
+    # BLIP 모델 초기화 (이미지 캡셔닝)
+    blip_processor = None
+    blip_model = None
+except ImportError:
+    BLIP_AVAILABLE = False
+    logging.warning("transformers or torch not installed. Image captioning support disabled.")
 
 from database import DatabaseManager
 import sys
@@ -291,11 +313,13 @@ class FileIndexer:
     """파일 인덱싱 엔진 - Worker Thread에서 실행"""
     
     # 지원하는 파일 확장자
-    SUPPORTED_TEXT_EXTENSIONS = {'.txt', '.log', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', 
-                                  '.java', '.cpp', '.c', '.h', '.cs', '.json', '.xml', '.html', 
+    SUPPORTED_TEXT_EXTENSIONS = {'.txt', '.log', '.md', '.py', '.js', '.ts', '.jsx', '.tsx',
+                                  '.java', '.cpp', '.c', '.h', '.cs', '.json', '.xml', '.html',
                                   '.css', '.sql', '.sh', '.bat', '.ps1', '.yaml', '.yml', '.svg'}
-    
+
     SUPPORTED_DOC_EXTENSIONS = {'.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.csv', '.pdf', '.hwp'}
+    
+    SUPPORTED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp'}
     
     # 제외할 폴더 패턴
     EXCLUDED_DIRS = {
@@ -321,7 +345,8 @@ class FileIndexer:
         '.iso', '.img', '.dmg', '.vhd', '.vmdk',
         '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
         '.mp3', '.mp4', '.avi', '.mkv', '.mov', '.flv',
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico',  # SVG는 XML 텍스트이므로 제외 목록에서 제거
+        # 이미지 파일은 SUPPORTED_IMAGE_EXTENSIONS에서 관리 (AI 설명 + OCR)
+        '.ico',  # 아이콘 파일만 제외
         '.ttf', '.otf', '.woff', '.woff2', '.eot'
     }
     
@@ -1560,7 +1585,7 @@ class FileIndexer:
             return False
         
         # 지원하는 확장자가 아니면 제외
-        if ext not in self.SUPPORTED_TEXT_EXTENSIONS and ext not in self.SUPPORTED_DOC_EXTENSIONS:
+        if ext not in self.SUPPORTED_TEXT_EXTENSIONS and ext not in self.SUPPORTED_DOC_EXTENSIONS and ext not in self.SUPPORTED_IMAGE_EXTENSIONS:
             return False
         
         # 전체 경로가 제외 경로 접두사에 해당하면 제외
@@ -1777,6 +1802,10 @@ class FileIndexer:
             # HWP
             elif ext == '.hwp':
                 return self._extract_hwp(file_path)
+            
+            # 이미지 (AI 설명 + OCR)
+            elif ext in self.SUPPORTED_IMAGE_EXTENSIONS and (BLIP_AVAILABLE or OCR_AVAILABLE):
+                return self._extract_image(file_path)
         
         except Exception as e:
             logger.error(f"텍스트 추출 오류 [{file_path}]: {e}")
@@ -2473,6 +2502,112 @@ class FileIndexer:
         # 마지막 정리
         if temp_file:
             self._cleanup_temp(temp_file)
+        
+        return None
+    
+    def _extract_image(self, file_path: str) -> Optional[str]:
+        """
+        이미지 파일에서 텍스트 추출 (AI 설명 + OCR + EXIF 메타데이터)
+        
+        Args:
+            file_path: 이미지 파일 경로
+        
+        Returns:
+            추출된 텍스트 (AI 설명 + OCR 결과 + 메타데이터)
+        """
+        global ocr_reader, blip_processor, blip_model
+        
+        try:
+            # PIL로 이미지 열기
+            with Image.open(file_path) as img:
+                # RGB로 변환 (BLIP은 RGB만 지원)
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                text_parts = []
+                
+                # 1. AI 이미지 설명 생성 (BLIP)
+                if BLIP_AVAILABLE:
+                    try:
+                        # BLIP 모델 초기화 (첫 사용 시)
+                        if blip_model is None:
+                            logger.info("🔄 BLIP 모델 초기화 중... (최초 1회, 약 2GB 다운로드)")
+                            blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+                            blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+                            # CPU에서 실행
+                            blip_model.eval()
+                            logger.info("✅ BLIP 모델 로드 완료")
+                        
+                        # 이미지 캡셔닝
+                        inputs = blip_processor(img, return_tensors="pt")
+                        
+                        with torch.no_grad():
+                            # 기본 캡션 생성
+                            out = blip_model.generate(**inputs, max_length=50)
+                            caption = blip_processor.decode(out[0], skip_special_tokens=True)
+                            
+                            # 조건부 캡션 생성 (더 상세한 설명)
+                            text_prompt = "a photography of"
+                            inputs_conditional = blip_processor(img, text_prompt, return_tensors="pt")
+                            out_conditional = blip_model.generate(**inputs_conditional, max_length=50)
+                            caption_detailed = blip_processor.decode(out_conditional[0], skip_special_tokens=True)
+                        
+                        text_parts.append("=== AI 이미지 설명 ===")
+                        text_parts.append(f"설명: {caption}")
+                        if caption_detailed != caption:
+                            text_parts.append(f"상세 설명: {caption_detailed}")
+                        
+                    except Exception as e:
+                        logger.debug(f"BLIP 캡셔닝 오류 [{file_path}]: {e}")
+                
+                # 2. EXIF 메타데이터 추출
+                try:
+                    exif_data = img._getexif()
+                    if exif_data:
+                        text_parts.append("\n=== 이미지 정보 (EXIF) ===")
+                        for tag_id, value in exif_data.items():
+                            tag = ExifTags.TAGS.get(tag_id, tag_id)
+                            if isinstance(value, bytes):
+                                continue  # 바이너리 데이터 스킵
+                            text_parts.append(f"{tag}: {value}")
+                except Exception as e:
+                    logger.debug(f"EXIF 추출 오류 [{file_path}]: {e}")
+                
+                # 3. 기본 이미지 정보
+                text_parts.append(f"\n=== 기본 정보 ===")
+                text_parts.append(f"파일명: {os.path.basename(file_path)}")
+                text_parts.append(f"크기: {img.width}x{img.height}")
+                text_parts.append(f"포맷: {img.format}")
+                text_parts.append(f"모드: {img.mode}")
+                
+                # 4. OCR 텍스트 추출
+                if OCR_AVAILABLE:
+                    try:
+                        # EasyOCR 리더 초기화 (첫 사용 시)
+                        if ocr_reader is None:
+                            logger.info("🔄 EasyOCR 초기화 중... (최초 1회, 모델 다운로드)")
+                            ocr_reader = easyocr.Reader(['ko', 'en'], gpu=False)
+                        
+                        # OCR 수행 (numpy array로 변환하여 한글 경로 문제 해결)
+                        img_array = np.array(img)
+                        result = ocr_reader.readtext(img_array)
+                        
+                        if result:
+                            text_parts.append(f"\n=== OCR 텍스트 추출 ===")
+                            for (bbox, text, prob) in result:
+                                if prob > 0.3:  # 신뢰도 30% 이상만
+                                    text_parts.append(text)
+                        
+                    except Exception as e:
+                        logger.debug(f"OCR 추출 오류 [{file_path}]: {e}")
+                
+                if text_parts:
+                    content = '\n'.join(text_parts)
+                    logger.info(f"✅ 이미지 인덱싱 완료 (AI 설명 + OCR): {os.path.basename(file_path)}")
+                    return content[:100000]  # 최대 100KB
+                
+        except Exception as e:
+            logger.error(f"이미지 처리 오류 [{file_path}]: {e}")
         
         return None
     

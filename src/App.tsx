@@ -348,7 +348,10 @@ export default function App() {
 
   // --- Transient State ---
   const [clipboard, setClipboard] = useState<FileItem | null>(null);
+  const [clipboardFiles, setClipboardFiles] = useState<string[]>([]); // 다중 파일 클립보드
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>({ isOpen: false, item: null });
+  const [renamingFile, setRenamingFile] = useState<{ path: string; oldName: string } | null>(null);
+  const [newFileName, setNewFileName] = useState('');
   const [showIndexingLog, setShowIndexingLog] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
@@ -1406,13 +1409,19 @@ export default function App() {
       setIsIndexing(true);
       setIndexingStatus('인덱싱 시작 중...');
       addIndexingMessage(`인덱싱 시작: ${selectedDir}`);
-      
+
       const response = await BackendAPI.startIndexing([selectedDir]);
-      
-      if (response.status === 'started') {
-        setIndexingStatus('인덱싱 진행 중...');
-        addIndexingMessage('인덱싱이 시작되었습니다');
-        
+
+      if (response.status === 'started' || response.status === 'already_running') {
+        // 새로 시작하거나 이미 실행 중인 경우 모두 진행 상황 표시
+        if (response.status === 'already_running') {
+          setIndexingStatus('인덱싱 실행 중...');
+          addIndexingMessage('⚠️ 인덱싱이 이미 실행 중입니다. 진행 상황을 표시합니다.');
+        } else {
+          setIndexingStatus('인덱싱 진행 중...');
+          addIndexingMessage('인덱싱이 시작되었습니다');
+        }
+
         // 주기적으로 상태 및 로그 확인 (Throttling + AbortController)
         const statusInterval = setInterval(async () => {
           try {
@@ -1618,13 +1627,41 @@ export default function App() {
   };
 
   const handleCopy = () => {
-    if (activeTab.selectedFile) {
-      setClipboard(activeTab.selectedFile);
-      addSearchLog(`클립보드 복사: ${activeTab.selectedFile.name}`);
+    const selectedCount = (activeTab.selectedFiles || []).length;
+    const filesToCopy = selectedCount > 0 
+      ? activeTab.selectedFiles
+      : activeTab.selectedFile ? [activeTab.selectedFile.path!] : [];
+    
+    if (filesToCopy.length > 0) {
+      setClipboardFiles(filesToCopy);
+      addSearchLog(`클립보드 복사: ${filesToCopy.length}개 파일`);
     }
   };
 
-  const handlePaste = () => {
+  const handlePaste = async () => {
+    if (clipboardFiles.length === 0) return;
+    
+    try {
+      if (typeof window !== 'undefined' && (window as any).electronAPI) {
+        const result = await (window as any).electronAPI.copyFiles(clipboardFiles, activeTab.currentPath);
+        
+        if (result.success) {
+          const successCount = result.results.filter((r: any) => r.success).length;
+          addSearchLog(`✅ ${successCount}개 파일 붙여넣기 완료`);
+          
+          // 파일 리스트 새로고침
+          navigate(activeTab.selectedFolder, activeTab.currentPath);
+        } else {
+          addSearchLog(`❌ 붙여넣기 실패: ${result.error}`);
+        }
+      }
+    } catch (error) {
+      addSearchLog(`❌ 붙여넣기 오류: ${error}`);
+    }
+  };
+  
+  // 구버전 호환용 (나중에 제거 가능)
+  const handlePasteOld = () => {
     if (!clipboard) return;
     let name = clipboard.name;
     let i = 2;
@@ -1638,8 +1675,8 @@ export default function App() {
         name = `${clipboard.name} - 복사본 (${i++})`;
       }
     }
-    const newFile = { 
-      ...clipboard, 
+    const newFile = {
+      ...clipboard,
       name, 
       date: new Date().toLocaleString('ko-KR', {
         year: 'numeric',
@@ -1948,7 +1985,13 @@ export default function App() {
 
   // --- Context Menu Close ---
   useEffect(() => {
-    const closeMenu = () => setContextMenu(p => ({ ...p, visible: false }));
+    const closeMenu = (e: MouseEvent) => {
+      // Context Menu 내부 클릭이 아닐 때만 닫기
+      const target = e.target as HTMLElement;
+      if (!target.closest('.context-menu')) {
+        setContextMenu(p => ({ ...p, visible: false }));
+      }
+    };
     window.addEventListener('click', closeMenu);
     return () => window.removeEventListener('click', closeMenu);
   }, []);
@@ -2005,135 +2048,268 @@ export default function App() {
         </div>
       )}
 
-      {/* --- Context Menu --- */}
-      {contextMenu.visible && contextMenu.target && (
-        <div className="fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
-          <div className="px-3 py-2 text-xs text-gray-500 border-b border-[#444] mb-1 truncate max-w-[250px]">{contextMenu.target.path}</div>
-          
-          {/* 인덱싱하기 (파일만) */}
-          {contextMenu.target.type !== 'folder' && (
-            <>
-              <button 
-                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
-                onClick={async () => { 
-                  const filePath = contextMenu.target!.path;
-                  try {
-                    addSearchLog(`인덱싱 시작: ${contextMenu.target!.name}`);
-                    const result = await BackendAPI.indexSingleFile(filePath);
+      {/* --- Rename Dialog --- */}
+      {renamingFile && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setRenamingFile(null)}>
+          <div className="w-[400px] bg-[#202020] border border-[#444] rounded-lg shadow-2xl p-5 transform scale-100" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-white mb-4">이름 바꾸기</h3>
+            <div className="mb-4">
+              <label className="text-xs text-gray-400 mb-2 block">새 이름</label>
+              <input
+                type="text"
+                value={newFileName}
+                onChange={(e) => setNewFileName(e.target.value)}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    // 이름 변경 실행
+                    if (!newFileName.trim()) {
+                      addSearchLog('❌ 파일 이름을 입력하세요');
+                      return;
+                    }
                     
-                    if (result.success) {
-                      addSearchLog(`✅ ${result.message}`);
+                    try {
+                      if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                        const result = await (window as any).electronAPI.renameFile(renamingFile.path, newFileName);
+                        
+                        if (result.success) {
+                          addSearchLog(`✅ 이름 변경 완료: ${renamingFile.oldName} → ${newFileName}`);
+                          
+                          // 파일 리스트 새로고침
+                          navigate(activeTab.selectedFolder, activeTab.currentPath);
+                        } else {
+                          addSearchLog(`❌ 이름 변경 실패: ${result.error}`);
+                        }
+                      }
+                    } catch (error) {
+                      addSearchLog(`❌ 이름 변경 오류: ${error}`);
+                    }
+                    
+                    setRenamingFile(null);
+                  } else if (e.key === 'Escape') {
+                    setRenamingFile(null);
+                  }
+                }}
+                autoFocus
+                className="w-full px-3 py-2 bg-[#1A1A1A] border border-[#444] rounded text-white text-sm focus:outline-none focus:border-[#0067C0]"
+              />
+              <p className="text-xs text-gray-500 mt-2">이전 이름: {renamingFile.oldName}</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setRenamingFile(null)}
+                className="px-4 py-1.5 bg-[#333] hover:bg-[#444] rounded border border-[#555] text-white text-sm transition-colors active:scale-95 duration-100"
+              >
+                취소
+              </button>
+              <button
+                onClick={async () => {
+                  if (!newFileName.trim()) {
+                    addSearchLog('❌ 파일 이름을 입력하세요');
+                    return;
+                  }
+                  
+                  try {
+                    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                      const result = await (window as any).electronAPI.renameFile(renamingFile.path, newFileName);
                       
-                      // 파일 리스트에서 해당 파일의 인덱싱 상태 업데이트
-                      const updatedFiles = activeTab.files.map(f => 
-                        f.path === filePath ? { ...f, indexed: true } : f
-                      );
-                      updateActiveTab({ files: updatedFiles });
-                    } else {
-                      addSearchLog(`❌ ${result.message}`);
+                      if (result.success) {
+                        addSearchLog(`✅ 이름 변경 완료: ${renamingFile.oldName} → ${newFileName}`);
+                        
+                        // 파일 리스트 새로고침
+                        navigate(activeTab.selectedFolder, activeTab.currentPath);
+                      } else {
+                        addSearchLog(`❌ 이름 변경 실패: ${result.error}`);
+                      }
                     }
                   } catch (error) {
-                    addSearchLog(`❌ 인덱싱 오류: ${error}`);
+                    addSearchLog(`❌ 이름 변경 오류: ${error}`);
                   }
+                  
+                  setRenamingFile(null);
+                }}
+                className="px-4 py-1.5 bg-[#0067C0] hover:bg-[#005a9e] rounded text-white text-sm transition-colors active:scale-95 duration-100"
+              >
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- Context Menu --- */}
+      {contextMenu.visible && contextMenu.target && (
+        <div className="context-menu fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
+          <div className="px-3 py-2 text-xs text-gray-500 border-b border-[#444] mb-1 truncate max-w-[250px]">{contextMenu.target.path}</div>
+          
+          {/* 파일/폴더를 우클릭한 경우 */}
+          {(contextMenu.target!.type !== 'folder' || contextMenu.target!.path !== activeTab.currentPath) ? (
+            <>
+              {/* 경로 복사 */}
+              <button 
+                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
+                onClick={() => { 
+                  const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
+                  navigator.clipboard.writeText(dirPath); 
+                  addSearchLog(`경로 복사됨: ${dirPath}`);
+                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
+                }}
+              >
+                <Clipboard size={14} className="text-gray-400 group-hover:text-white" /> 
+                경로 복사
+              </button>
+              
+              {/* 파일이름 복사 (파일만) */}
+              {contextMenu.target.type !== 'folder' && (
+                <button 
+                  className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
+                  onClick={() => { 
+                    navigator.clipboard.writeText(contextMenu.target!.name); 
+                    addSearchLog('파일이름 복사됨');
+                    setContextMenu({ visible: false, x: 0, y: 0, target: null });
+                  }}
+                >
+                  <FileText size={14} className="text-gray-400 group-hover:text-white" /> 
+                  파일이름 복사
+                </button>
+              )}
+              
+              <div className="h-px bg-[#444] my-1"></div>
+              
+              {/* 이름바꾸기 */}
+              <button 
+                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
+                onClick={() => {
+                  setRenamingFile({
+                    path: contextMenu.target!.path,
+                    oldName: contextMenu.target!.name
+                  });
+                  setNewFileName(contextMenu.target!.name);
+                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
                 }}
               >
                 <FileText size={14} className="text-gray-400 group-hover:text-white" /> 
-                인덱싱하기
+                이름바꾸기
               </button>
-              <div className="h-px bg-[#444] my-1"></div>
+              
+              {/* 삭제 */}
+              <button 
+                className="w-full text-left px-3 py-1.5 hover:bg-red-600 hover:text-white flex items-center gap-2 group active:bg-red-700 transition-colors duration-75" 
+                onClick={async () => {
+                  const selectedCount = (activeTab.selectedFiles || []).length;
+                  const filesToDelete = selectedCount > 0 
+                    ? activeTab.selectedFiles
+                    : [contextMenu.target!.path];
+                  
+                  const confirmMsg = selectedCount > 0 
+                    ? `선택한 ${selectedCount}개 파일을 휴지통으로 이동하시겠습니까?`
+                    : `'${contextMenu.target!.name}'을(를) 휴지통으로 이동하시겠습니까?`;
+                  
+                  if (!confirm(confirmMsg)) return;
+                  
+                  try {
+                    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                      const result = await (window as any).electronAPI.deleteFiles(filesToDelete);
+                      
+                      if (result.success) {
+                        const successCount = result.results.filter((r: any) => r.success).length;
+                        addSearchLog(`✅ ${successCount}개 파일 삭제 완료`);
+                        
+                        // 파일 리스트에서 삭제된 파일 제거
+                        const deletedPaths = result.results.filter((r: any) => r.success).map((r: any) => r.path);
+                        const updatedFiles = activeTab.files.filter(f => !deletedPaths.includes(f.path || ''));
+                        updateActiveTab({ 
+                          files: updatedFiles, 
+                          selectedFile: null,
+                          selectedFiles: []
+                        });
+                      } else {
+                        addSearchLog(`❌ 삭제 실패: ${result.error}`);
+                      }
+                    }
+                  } catch (error) {
+                    addSearchLog(`❌ 삭제 오류: ${error}`);
+                  }
+                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
+                }}
+              >
+                <Trash2 size={14} className="text-gray-400 group-hover:text-white" /> 
+                삭제{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
+              </button>
+              
+              {/* 복사 */}
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const selectedCount = (activeTab.selectedFiles || []).length;
+                  const filesToCopy = selectedCount > 0
+                    ? activeTab.selectedFiles
+                    : [contextMenu.target!.path];
+
+                  console.log('📋 복사할 파일:', filesToCopy);
+                  setClipboardFiles(filesToCopy);
+                  addSearchLog(`✅ 클립보드에 복사: ${filesToCopy.length}개 파일`);
+                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
+                }}
+              >
+                <Copy size={14} className="text-gray-400 group-hover:text-white" />
+                복사{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
+              </button>
+            </>
+          ) : null}
+          
+          {/* 붙여넣기 - 클립보드에 파일이 있을 때만 표시 */}
+          {clipboardFiles.length > 0 && (
+            <>
+              {(contextMenu.target!.type !== 'folder' || contextMenu.target!.path !== activeTab.currentPath) && (
+                <div className="h-px bg-[#444] my-1"></div>
+              )}
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  console.log('📌 붙여넣기 클릭, 클립보드:', clipboardFiles);
+                  
+                  // 대상 경로 결정: 폴더를 우클릭했으면 그 폴더로, 아니면 현재 경로로
+                  const destPath = contextMenu.target!.type === 'folder' 
+                    ? contextMenu.target!.path 
+                    : activeTab.currentPath;
+
+                  console.log('📂 붙여넣기 대상:', destPath);
+
+                  try {
+                    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+                      addSearchLog(`⏳ 붙여넣기 시작: ${clipboardFiles.length}개 파일 → ${destPath}`);
+                      const result = await (window as any).electronAPI.copyFiles(clipboardFiles, destPath);
+
+                      console.log('✅ 붙여넣기 결과:', result);
+
+                      if (result.success) {
+                        const successCount = result.results.filter((r: any) => r.success).length;
+                        addSearchLog(`✅ ${successCount}개 파일 붙여넣기 완료`);
+
+                        // 파일 리스트 새로고침
+                        navigate(activeTab.selectedFolder, activeTab.currentPath);
+                      } else {
+                        addSearchLog(`❌ 붙여넣기 실패: ${result.error}`);
+                      }
+                    } else {
+                      addSearchLog('❌ Electron API를 사용할 수 없습니다');
+                    }
+                  } catch (error) {
+                    console.error('❌ 붙여넣기 오류:', error);
+                    addSearchLog(`❌ 붙여넣기 오류: ${error}`);
+                  }
+                  
+                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
+                }}
+              >
+                <Clipboard size={14} className="text-gray-400 group-hover:text-white" />
+                붙여넣기 ({clipboardFiles.length}개)
+              </button>
             </>
           )}
-          
-          {/* 삭제 (다중 선택 지원) */}
-          <button 
-            className="w-full text-left px-3 py-1.5 hover:bg-red-600 hover:text-white flex items-center gap-2 group active:bg-red-700 transition-colors duration-75" 
-            onClick={async () => {
-              const selectedCount = (activeTab.selectedFiles || []).length;
-              const filesToDelete = selectedCount > 0 
-                ? activeTab.selectedFiles
-                : [contextMenu.target!.path];
-              
-              const confirmMsg = selectedCount > 0 
-                ? `선택한 ${selectedCount}개 파일을 휴지통으로 이동하시겠습니까?`
-                : `'${contextMenu.target!.name}'을(를) 휴지통으로 이동하시겠습니까?`;
-              
-              if (!confirm(confirmMsg)) return;
-              
-              try {
-                if (typeof window !== 'undefined' && (window as any).electronAPI) {
-                  const result = await (window as any).electronAPI.deleteFiles(filesToDelete);
-                  
-                  if (result.success) {
-                    const successCount = result.results.filter((r: any) => r.success).length;
-                    addSearchLog(`✅ ${successCount}개 파일 삭제 완료`);
-                    
-                    // 파일 리스트에서 삭제된 파일 제거
-                    const deletedPaths = result.results.filter((r: any) => r.success).map((r: any) => r.path);
-                    const updatedFiles = activeTab.files.filter(f => !deletedPaths.includes(f.path || ''));
-                    updateActiveTab({ 
-                      files: updatedFiles, 
-                      selectedFile: null,
-                      selectedFiles: []
-                    });
-                  } else {
-                    addSearchLog(`❌ 삭제 실패: ${result.error}`);
-                  }
-                }
-              } catch (error) {
-                addSearchLog(`❌ 삭제 오류: ${error}`);
-              }
-            }}
-          >
-            <Trash2 size={14} className="text-gray-400 group-hover:text-white" /> 
-            삭제{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
-          </button>
-          
-          {/* 복사 (다중 선택 지원) */}
-          <button 
-            className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
-            onClick={async () => {
-              const selectedCount = (activeTab.selectedFiles || []).length;
-              const filesToCopy = selectedCount > 0 
-                ? activeTab.selectedFiles
-                : [contextMenu.target!.path];
-              
-              const destPath = activeTab.currentPath;
-              
-              try {
-                if (typeof window !== 'undefined' && (window as any).electronAPI) {
-                  const result = await (window as any).electronAPI.copyFiles(filesToCopy, destPath);
-                  
-                  if (result.success) {
-                    const successCount = result.results.filter((r: any) => r.success).length;
-                    addSearchLog(`✅ ${successCount}개 파일 복사 완료`);
-                    
-                    // 파일 리스트 새로고침
-                    navigate(activeTab.selectedFolder, activeTab.currentPath);
-                  } else {
-                    addSearchLog(`❌ 복사 실패: ${result.error}`);
-                  }
-                }
-              } catch (error) {
-                addSearchLog(`❌ 복사 오류: ${error}`);
-              }
-            }}
-          >
-            <Copy size={14} className="text-gray-400 group-hover:text-white" /> 
-            복사{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
-          </button>
-          
-          <div className="h-px bg-[#444] my-1"></div>
-          
-          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { 
-            const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
-            navigator.clipboard.writeText(dirPath); 
-            addSearchLog(`경로 복사됨: ${dirPath}`); 
-          }}>
-            <Clipboard size={14} className="text-gray-400 group-hover:text-white" /> 경로 복사
-          </button>
-          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.name); addSearchLog('이름 복사됨'); }}>
-            <FileText size={14} className="text-gray-400 group-hover:text-white" /> 이름 복사
-          </button>
         </div>
       )}
 
@@ -2260,7 +2436,7 @@ export default function App() {
                 <button onClick={handleCopy} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="복사"><Copy size={16}/></button>
                 <button onClick={handleRename} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="이름 변경"><Edit2 size={16}/></button>
                 <button onClick={handleDelete} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333] hover:text-red-400' : 'text-[#555]'}`} title="삭제"><Trash2 size={16}/></button>
-                <button onClick={handlePaste} disabled={!clipboard} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${clipboard ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="붙여넣기"><Clipboard size={16}/></button>
+                <button onClick={handlePaste} disabled={clipboardFiles.length === 0} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${clipboardFiles.length > 0 ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="붙여넣기"><Clipboard size={16}/></button>
                 <button onClick={handleRefresh} className="p-1.5 text-[#D0D0D0] rounded hover:bg-[#333] active:bg-[#444] active:scale-95 transition-transform duration-100" title="새로고침"><RefreshCw size={16}/></button>
               </div>
             </div>
@@ -2303,7 +2479,24 @@ export default function App() {
               <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs flex-1" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
             </div>
             {/* List */}
-            <div className="flex-1 overflow-y-auto" onClick={() => updateActiveTab({ selectedFile: null, selectedFiles: [] })}>
+            <div 
+              className="flex-1 overflow-y-auto" 
+              onClick={() => updateActiveTab({ selectedFile: null, selectedFiles: [] })}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                // 빈 공간을 우클릭: 현재 폴더를 대상으로 컨텍스트 메뉴 표시
+                setContextMenu({ 
+                  visible: true, 
+                  x: e.clientX, 
+                  y: e.clientY, 
+                  target: { 
+                    name: activeTab.selectedFolder, 
+                    path: activeTab.currentPath, 
+                    type: 'folder' 
+                  } 
+                });
+              }}
+            >
               <div className="min-w-max">
                 {activeTab.files.map((file, i) => {
                   const { Icon: FileIcon, color: iconColor } = getFileIconProps(file);
@@ -2369,7 +2562,17 @@ export default function App() {
                           }
                         }
                       }}
-                      onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: file.name, path: file.path || '', type: file.type } }); }}
+                      onContextMenu={(e) => { 
+                        e.preventDefault(); 
+                        e.stopPropagation();
+                        console.log('🖱️ Context Menu 트리거:', file.name, file.type);
+                        setContextMenu({ 
+                          visible: true, 
+                          x: e.clientX, 
+                          y: e.clientY, 
+                          target: { name: file.name, path: file.path || '', type: file.type } 
+                        }); 
+                      }}
                     >
                       <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden border-r border-dotted border-[#2a2a2a]">
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
@@ -2416,47 +2619,7 @@ export default function App() {
           {/* Right Panel (Preview) */}
           <div className="flex-1 flex flex-col bg-[#202020] min-w-[200px]">
             <div className="h-8 border-b border-[#444] bg-[#252525] flex items-center justify-between px-3">
-              <span className="text-xs font-bold text-[#D0D0D0]">{showIndexingLog ? '인덱싱 DB 내역' : '내용 보기 및 편집'}</span>
-              <button 
-                onClick={async () => {
-                  if (!showIndexingLog) {
-                    // 인덱싱 보기로 전환 시 DB 조회
-                    try {
-                      // 선택한 파일이 있으면 해당 파일만, 없으면 전체 조회
-                      if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
-                        const fileDetail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path!);
-                        if (fileDetail) {
-                          // 선택한 파일의 정보를 배열로 변환하여 표시
-                          setIndexedDatabase([{
-                            path: fileDetail.path,
-                            content_preview: fileDetail.content.substring(0, 200),
-                            content_length: fileDetail.content_length,
-                            mtime: fileDetail.mtime,
-                            mtime_formatted: fileDetail.mtime_formatted
-                          }]);
-                          setDbTotalCount(1);
-                        } else {
-                          setIndexedDatabase([]);
-                          setDbTotalCount(0);
-                          addSearchLog('선택한 파일이 인덱싱되지 않았습니다');
-                        }
-                      } else {
-                        const dbResponse = await BackendAPI.getIndexedDatabase(1000, 0);
-                        setIndexedDatabase(dbResponse.files);
-                        setDbTotalCount(dbResponse.total_count);
-                      }
-                    } catch (error) {
-                      console.error('DB 조회 오류:', error);
-                      addSearchLog('DB 조회 실패');
-                    }
-                  }
-                  setShowIndexingLog(!showIndexingLog);
-                }} 
-                className="flex items-center gap-1 text-[11px] px-2 py-0.5 border border-[#444] rounded bg-[#333] text-gray-300 hover:text-white hover:bg-[#444] active:scale-95 transition-transform duration-100"
-              >
-                {showIndexingLog ? <FileText size={10}/> : <List size={10}/>}
-                {showIndexingLog ? '미리보기' : '인덱싱 보기'}
-              </button>
+              <span className="text-xs font-bold text-[#D0D0D0]">내용 보기 및 편집</span>
             </div>
             <div className="flex-1 p-4 overflow-auto text-[#D0D0D0] text-xs font-mono">
               {showIndexingLog ? (
