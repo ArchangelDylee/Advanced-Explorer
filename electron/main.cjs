@@ -271,6 +271,106 @@ function stopPythonActivityMonitor() {
 // 인덱싱 상태 저장 변수
 let indexingStateBeforeSleep = null;
 
+// ========================================
+// 절전 모드 복귀 시 시스템 점검 헬퍼 함수
+// ========================================
+
+/**
+ * Python 백엔드 Health Check
+ * @returns {Promise<boolean>} 정상이면 true
+ */
+async function checkBackendHealth() {
+  try {
+    const response = await fetch('http://127.0.0.1:5000/api/health', {
+      method: 'GET',
+      timeout: 5000
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      return data.status === 'ok';
+    }
+    return false;
+  } catch (error) {
+    console.error('❌ Health Check 실패:', error.message);
+    return false;
+  }
+}
+
+/**
+ * 데이터베이스 연결 상태 확인
+ * @returns {Promise<boolean>} 정상이면 true
+ */
+async function checkDatabaseConnection() {
+  try {
+    const response = await fetch('http://127.0.0.1:5000/api/statistics', {
+      method: 'GET',
+      timeout: 5000
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      // 응답에 total_files가 있으면 DB 조회 성공
+      return typeof data.total_files !== 'undefined';
+    }
+    return false;
+  } catch (error) {
+    console.error('❌ DB 연결 확인 실패:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Python 백엔드 재시작
+ * @returns {Promise<boolean>} 성공이면 true
+ */
+async function restartPythonBackend() {
+  try {
+    console.log('🔄 Python 백엔드 재시작 중...');
+    
+    // 기존 프로세스 종료
+    if (pythonProcess) {
+      pythonProcess.kill();
+      pythonProcess = null;
+      pythonPid = null;
+      await sleep(1000);
+    }
+    
+    // 새 프로세스 시작
+    const newProcess = startPythonBackend();
+    
+    if (!newProcess) {
+      return false;
+    }
+    
+    // 시작 대기 (최대 10초)
+    for (let i = 0; i < 10; i++) {
+      await sleep(1000);
+      const healthOk = await checkBackendHealth();
+      if (healthOk) {
+        console.log('✅ Python 백엔드 재시작 완료');
+        return true;
+      }
+    }
+    
+    console.error('❌ Python 백엔드 재시작 후 응답 없음');
+    return false;
+    
+  } catch (error) {
+    console.error('❌ Python 백엔드 재시작 실패:', error);
+    return false;
+  }
+}
+
+/**
+ * 지연 함수
+ * @param {number} ms 밀리초
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Windows 절전 모드 감지 및 인덱싱 재개
 function setupPowerMonitoring() {
   console.log('========================================');
@@ -305,16 +405,52 @@ function setupPowerMonitoring() {
   // 절전 모드 복귀 (Resume)
   powerMonitor.on('resume', async () => {
     console.log('⚡ 시스템이 절전 모드에서 복귀했습니다');
+    console.log('========================================');
+    console.log('🔍 시스템 상태 점검 시작');
+    console.log('========================================');
     
     // 약간의 지연 후 상태 확인 (시스템이 완전히 복귀할 시간 제공)
     setTimeout(async () => {
-      if (indexingStateBeforeSleep && indexingStateBeforeSleep.was_running) {
-        console.log('🔄 인덱싱 재개 중...');
-        console.log('  - 중단 시각:', indexingStateBeforeSleep.timestamp);
-        console.log('  - 인덱싱 경로:', indexingStateBeforeSleep.paths.join(', '));
+      try {
+        // 1단계: Python 백엔드 Health Check
+        console.log('1️⃣ Python 백엔드 상태 확인 중...');
+        const healthOk = await checkBackendHealth();
         
-        try {
-          // 인덱싱 재개
+        if (!healthOk) {
+          console.error('❌ Python 백엔드 응답 없음 - 재시작 시도');
+          const restarted = await restartPythonBackend();
+          
+          if (!restarted) {
+            console.error('❌ Python 백엔드 재시작 실패 - 인덱싱 재개 불가');
+            indexingStateBeforeSleep = null;
+            return;
+          }
+          
+          console.log('✅ Python 백엔드 재시작 완료');
+          // 재시작 후 안정화 대기
+          await sleep(2000);
+        } else {
+          console.log('✅ Python 백엔드 정상 작동 중');
+        }
+        
+        // 2단계: DB 연결 상태 확인
+        console.log('2️⃣ 데이터베이스 연결 상태 확인 중...');
+        const dbOk = await checkDatabaseConnection();
+        
+        if (!dbOk) {
+          console.error('❌ 데이터베이스 연결 오류 - 인덱싱 재개 불가');
+          indexingStateBeforeSleep = null;
+          return;
+        }
+        
+        console.log('✅ 데이터베이스 연결 정상');
+        
+        // 3단계: 인덱싱 재개 (절전 전 실행 중이었다면)
+        if (indexingStateBeforeSleep && indexingStateBeforeSleep.was_running) {
+          console.log('3️⃣ 인덱싱 재개 중...');
+          console.log('  - 중단 시각:', indexingStateBeforeSleep.timestamp);
+          console.log('  - 인덱싱 경로:', indexingStateBeforeSleep.paths.join(', '));
+          
           const response = await fetch('http://127.0.0.1:5000/api/indexing/start', {
             method: 'POST',
             headers: {
@@ -327,6 +463,8 @@ function setupPowerMonitoring() {
           
           if (response.ok) {
             console.log('✅ 인덱싱 재개 성공');
+            console.log('========================================');
+            
             // 윈도우에 알림 전송
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('indexing-resumed', {
@@ -337,14 +475,16 @@ function setupPowerMonitoring() {
           } else {
             console.error('❌ 인덱싱 재개 실패:', response.statusText);
           }
-        } catch (error) {
-          console.error('❌ 인덱싱 재개 중 오류:', error);
-        } finally {
-          // 상태 초기화
-          indexingStateBeforeSleep = null;
+        } else {
+          console.log('ℹ️ 복귀 전 인덱싱이 실행 중이 아니었습니다');
+          console.log('========================================');
         }
-      } else {
-        console.log('ℹ️ 복귀 전 인덱싱이 실행 중이 아니었습니다');
+        
+      } catch (error) {
+        console.error('❌ 절전 모드 복귀 처리 중 오류:', error);
+      } finally {
+        // 상태 초기화
+        indexingStateBeforeSleep = null;
       }
     }, 3000); // 3초 대기
   });

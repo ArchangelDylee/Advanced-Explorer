@@ -211,11 +211,96 @@ def cleanup():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """서버 상태 확인"""
-    return jsonify({
+    """
+    서버 상태 확인 (절전 모드 복귀 시 사용)
+    - Python 백엔드 상태
+    - 데이터베이스 연결 상태
+    - 인덱서 상태
+    - 검색 엔진 상태
+    """
+    health_status = {
         'status': 'ok',
-        'message': 'Python backend is running'
-    })
+        'message': 'Python backend is running',
+        'components': {}
+    }
+    
+    try:
+        # 1. 데이터베이스 연결 확인
+        try:
+            if db_manager and db_manager.conn:
+                # 간단한 쿼리로 DB 연결 확인
+                cursor = db_manager.conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM files")
+                total_files = cursor.fetchone()[0]
+                health_status['components']['database'] = {
+                    'status': 'ok',
+                    'connected': True,
+                    'total_files': total_files
+                }
+            else:
+                health_status['components']['database'] = {
+                    'status': 'error',
+                    'connected': False,
+                    'message': 'Database manager not initialized'
+                }
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['components']['database'] = {
+                'status': 'error',
+                'connected': False,
+                'message': str(e)
+            }
+            health_status['status'] = 'degraded'
+        
+        # 2. 인덱서 상태 확인
+        try:
+            if indexer:
+                health_status['components']['indexer'] = {
+                    'status': 'ok',
+                    'is_running': indexer.is_running,
+                    'initialized': True
+                }
+            else:
+                health_status['components']['indexer'] = {
+                    'status': 'error',
+                    'initialized': False
+                }
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['components']['indexer'] = {
+                'status': 'error',
+                'message': str(e)
+            }
+            health_status['status'] = 'degraded'
+        
+        # 3. 검색 엔진 상태 확인
+        try:
+            if search_engine:
+                health_status['components']['search_engine'] = {
+                    'status': 'ok',
+                    'initialized': True
+                }
+            else:
+                health_status['components']['search_engine'] = {
+                    'status': 'error',
+                    'initialized': False
+                }
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['components']['search_engine'] = {
+                'status': 'error',
+                'message': str(e)
+            }
+            health_status['status'] = 'degraded'
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        logger.error(f"Health check 오류: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Health check failed: {str(e)}'
+        }), 500
 
 
 @app.route('/api/indexing/start', methods=['POST'])
