@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFileStats: (filePath) => ipcRenderer.invoke('get-file-stats', filePath),
   readImageFile: (filePath) => ipcRenderer.invoke('read-image-file', filePath),
   openFile: (filePath) => ipcRenderer.invoke('open-file', filePath),
+  // 백엔드 Health Check 및 재시작
+  checkBackendHealth: () => ipcRenderer.invoke('check-backend-health'),
+  restartBackend: () => ipcRenderer.invoke('restart-backend'),
   platform: process.platform,
   isElectron: true
 });

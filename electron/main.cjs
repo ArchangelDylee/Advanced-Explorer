@@ -288,7 +288,23 @@ async function checkBackendHealth() {
     
     if (response.ok) {
       const data = await response.json();
-      return data.status === 'ok';
+      
+      // 'ok'와 'degraded' 모두 허용 (서버가 응답하고 있으면 재시작 불필요)
+      // 'degraded'는 일부 컴포넌트에 문제가 있지만 서버는 정상 작동 중
+      if (data.status === 'ok') {
+        return true;
+      } else if (data.status === 'degraded') {
+        console.warn('⚠️ 백엔드 상태: degraded (일부 컴포넌트 오류)');
+        if (data.components) {
+          Object.keys(data.components).forEach(component => {
+            if (data.components[component].status === 'error') {
+              console.warn(`  - ${component}: ${data.components[component].message || 'error'}`);
+            }
+          });
+        }
+        return true; // 서버는 응답 중이므로 재시작 불필요
+      }
+      return false;
     }
     return false;
   } catch (error) {
@@ -837,3 +853,55 @@ ipcMain.handle('open-file', async (event, filePath) => {
   }
 });
 
+// ========================================
+// 백엔드 Health Check 및 재시작 IPC 핸들러
+// ========================================
+
+// 백엔드 상태 확인
+ipcMain.handle('check-backend-health', async () => {
+  try {
+    console.log('🔍 백엔드 Health Check 요청됨...');
+    const isHealthy = await checkBackendHealth();
+    
+    return {
+      success: true,
+      healthy: isHealthy,
+      message: isHealthy ? 'Backend is healthy' : 'Backend is not responding'
+    };
+  } catch (error) {
+    console.error('❌ Health Check 실행 오류:', error);
+    return {
+      success: false,
+      healthy: false,
+      error: error.message
+    };
+  }
+});
+
+// 백엔드 재시작
+ipcMain.handle('restart-backend', async () => {
+  try {
+    console.log('🔄 백엔드 재시작 요청됨...');
+    const restarted = await restartPythonBackend();
+    
+    if (restarted) {
+      console.log('✅ 백엔드 재시작 완료');
+      return {
+        success: true,
+        message: 'Backend restarted successfully'
+      };
+    } else {
+      console.error('❌ 백엔드 재시작 실패');
+      return {
+        success: false,
+        error: 'Failed to restart backend'
+      };
+    }
+  } catch (error) {
+    console.error('❌ 백엔드 재시작 오류:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});

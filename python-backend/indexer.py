@@ -129,7 +129,7 @@ for handler in logging.root.handlers:
 logger = logging.getLogger(__name__)
 
 # 상수 정의
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1GB (1024MB)
 PARSE_TIMEOUT = 60  # 60초
 
 
@@ -293,7 +293,7 @@ class FileIndexer:
     # 지원하는 파일 확장자
     SUPPORTED_TEXT_EXTENSIONS = {'.txt', '.log', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', 
                                   '.java', '.cpp', '.c', '.h', '.cs', '.json', '.xml', '.html', 
-                                  '.css', '.sql', '.sh', '.bat', '.ps1', '.yaml', '.yml'}
+                                  '.css', '.sql', '.sh', '.bat', '.ps1', '.yaml', '.yml', '.svg'}
     
     SUPPORTED_DOC_EXTENSIONS = {'.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.csv', '.pdf', '.hwp'}
     
@@ -321,7 +321,7 @@ class FileIndexer:
         '.iso', '.img', '.dmg', '.vhd', '.vmdk',
         '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
         '.mp3', '.mp4', '.avi', '.mkv', '.mov', '.flv',
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico', '.svg',
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico',  # SVG는 XML 텍스트이므로 제외 목록에서 제거
         '.ttf', '.otf', '.woff', '.woff2', '.eot'
     }
     

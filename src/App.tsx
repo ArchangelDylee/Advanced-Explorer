@@ -319,22 +319,14 @@ export default function App() {
 
   // 마지막 Focusing된 폴더 정보 저장
   const [lastFocusedFolder, setLastFocusedFolder] = useLocalStorage<{ name: string; path: string } | null>('lastFocusedFolder', null);
+  // 초기 폴더 선택 완료 여부
+  const [initialFolderSelected, setInitialFolderSelected] = useState(false);
 
-  // 초기 탭 생성 시 마지막 Focusing된 폴더 또는 문서 폴더 사용
-  const getInitialFolder = () => {
-    if (lastFocusedFolder && lastFocusedFolder.path && lastFocusedFolder.name) {
-      return {
-        name: lastFocusedFolder.name,
-        path: lastFocusedFolder.path
-      };
-    }
-    return {
-      name: '문서',
-      path: `${userHome}\\Documents`
-    };
+  // 초기 탭 기본값 (실제 폴더는 useEffect에서 선택됨)
+  const initialFolder = {
+    name: '내 PC',
+    path: 'My Computer'
   };
-
-  const initialFolder = getInitialFolder();
 
   // Tabs (Multi-instance)
   const [tabs, setTabs] = useLocalStorage<TabItem[]>('tabs', [{ 
@@ -608,6 +600,67 @@ export default function App() {
     initializeDrives();
   }, []);
 
+  // 프로그램 시작 시 초기 폴더 자동 선택 (항상 문서 → Root 순서)
+  useEffect(() => {
+    const selectInitialFolder = async () => {
+      if (initialFolderSelected || !folderStructure || folderStructure.length === 0) {
+        return;
+      }
+
+      // 폴더 트리에 드라이브가 로드되었는지 확인
+      const myPC = folderStructure.find(node => node.name === '내 PC');
+      if (!myPC || !myPC.children || myPC.children.length === 0) {
+        console.log('⏳ 드라이브 로딩 대기 중...');
+        return;
+      }
+
+      if (typeof window !== 'undefined' && (window as any).electronAPI) {
+        const electronAPI = (window as any).electronAPI;
+        
+        try {
+          console.log('🎯 초기 폴더 선택 시작... (항상 문서 → Root)');
+          
+          // 1. 문서 폴더 확인 (즐겨찾기의 문서)
+          const documentsPath = `${userHome}\\Documents`;
+          console.log('📂 문서 폴더 확인 중:', documentsPath);
+          try {
+            const stats = await electronAPI.getFileStats(documentsPath);
+            if (stats && stats.isDirectory) {
+              console.log('✅ 문서 폴더 존재 - 자동 선택');
+              setInitialFolderSelected(true);
+              // 약간의 지연 후 navigate 호출
+              setTimeout(() => {
+                navigate('문서', documentsPath);
+              }, 100);
+              return;
+            }
+          } catch (error) {
+            console.log('⚠️ 문서 폴더 없음 - Root 드라이브로 대체');
+          }
+
+          // 2. 첫 번째 드라이브 루트 사용 (폴더 트리의 Root)
+          const firstDrive = myPC.children[0];
+          console.log('✅ Root 드라이브 선택:', firstDrive.name);
+          setInitialFolderSelected(true);
+          // 약간의 지연 후 navigate 호출
+          setTimeout(() => {
+            navigate(firstDrive.name, firstDrive.path || '');
+          }, 100);
+
+        } catch (error) {
+          console.error('❌ 초기 폴더 선택 오류:', error);
+        }
+      }
+    };
+
+    // 드라이브가 로드된 후 실행 (충분한 지연)
+    const timer = setTimeout(() => {
+      selectInitialFolder();
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [folderStructure, initialFolderSelected]);
+
   // Initialize content for active tab on mount (single unified effect)
   const initialLoadDone = React.useRef(false);
   useEffect(() => {
@@ -681,10 +734,53 @@ export default function App() {
                     setFileContent('ℹ️ OCR 텍스트가 없습니다.\n\n이미지를 인덱싱하면 텍스트를 추출할 수 있습니다.');
                   }
                 }
-              } catch (error) {
-                console.log('ℹ️ OCR 텍스트 조회 불가:', error);
-                if (!fileContent?.includes('⚠️')) {
-                  setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
+              } catch (error: any) {
+                const errorMsg = error?.message || String(error);
+                console.log('⚠️ OCR 텍스트 조회 오류:', errorMsg);
+                
+                // 네트워크 에러나 타임아웃인 경우에만 백엔드 상태 점검
+                if (errorMsg.includes('fetch') || errorMsg.includes('timeout') || errorMsg.includes('network')) {
+                  console.log('🔍 네트워크 오류 감지. 백엔드 상태 점검 중...');
+                  
+                  if (typeof window !== 'undefined' && (window as any).electronAPI?.checkBackendHealth) {
+                    try {
+                      const healthCheck = await (window as any).electronAPI.checkBackendHealth();
+                      
+                      if (!healthCheck.healthy) {
+                        console.warn('⚠️ 백엔드가 응답하지 않습니다. 재시작 시도...');
+                        const restartResult = await (window as any).electronAPI.restartBackend();
+                        
+                        if (restartResult.success) {
+                          console.log('✅ 백엔드 재시작 완료');
+                          setFileContent('✅ 백엔드가 재시작되었습니다.\n\n이미지를 다시 선택하면 OCR 텍스트를 조회할 수 있습니다.');
+                        } else {
+                          console.error('❌ 백엔드 재시작 실패');
+                          if (!fileContent?.includes('⚠️')) {
+                            setFileContent('⚠️ 백엔드 재시작 실패.\n\n프로그램을 재시작해주세요.');
+                          }
+                        }
+                      } else {
+                        // 백엔드는 정상이지만 OCR 텍스트가 없는 경우
+                        if (!fileContent?.includes('⚠️')) {
+                          setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
+                        }
+                      }
+                    } catch (healthError) {
+                      console.error('❌ Health Check 오류:', healthError);
+                      if (!fileContent?.includes('⚠️')) {
+                        setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
+                      }
+                    }
+                  } else {
+                    if (!fileContent?.includes('⚠️')) {
+                      setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
+                    }
+                  }
+                } else {
+                  // 404 등 다른 에러는 인덱싱되지 않은 것으로 간주
+                  if (!fileContent?.includes('⚠️')) {
+                    setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
+                  }
                 }
               }
             } catch (error) {
@@ -712,13 +808,68 @@ export default function App() {
               setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
             }
           } catch (error: any) {
-            console.error('파일 내용 조회 오류:', error);
+            console.error('❌ 파일 내용 조회 오류:', error);
             const errorMsg = error?.message || String(error);
             
-            if (errorMsg.includes('404')) {
-              setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+            // 백엔드 프로세스 상태 점검 및 자동 복구 시도
+            if (typeof window !== 'undefined' && (window as any).electronAPI?.checkBackendHealth) {
+              console.log('🔍 백엔드 상태 점검 중...');
+              setFileContent('🔍 백엔드 프로세스 점검 중...\n\n잠시만 기다려주세요.');
+              
+              try {
+                const healthCheck = await (window as any).electronAPI.checkBackendHealth();
+                console.log('🏥 Health Check 결과:', healthCheck);
+                
+                if (!healthCheck.healthy) {
+                  console.warn('⚠️ 백엔드가 응답하지 않습니다. 재시작 시도...');
+                  setFileContent('⚠️ 백엔드 프로세스가 응답하지 않습니다.\n\n🔄 자동 재시작 중...');
+                  
+                  const restartResult = await (window as any).electronAPI.restartBackend();
+                  console.log('🔄 재시작 결과:', restartResult);
+                  
+                  if (restartResult.success) {
+                    console.log('✅ 백엔드 재시작 완료. 재조회 시도...');
+                    setFileContent('✅ 백엔드 재시작 완료.\n\n🔄 파일 내용 다시 조회 중...');
+                    
+                    // 백엔드가 완전히 시작될 때까지 대기
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                    // 다시 조회 시도
+                    try {
+                      const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                      if (detail && detail.content) {
+                        setFileContent(detail.content);
+                        console.log('✅ 재조회 성공!');
+                      } else {
+                        setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+                      }
+                    } catch (retryError) {
+                      console.error('❌ 재조회 실패:', retryError);
+                      setFileContent('❌ 백엔드가 재시작되었지만 파일을 조회할 수 없습니다.\n\n파일이 인덱싱되지 않았을 수 있습니다.');
+                    }
+                  } else {
+                    console.error('❌ 백엔드 재시작 실패');
+                    setFileContent('❌ 백엔드 재시작에 실패했습니다.\n\n수동으로 프로그램을 재시작해주세요.');
+                  }
+                } else {
+                  // 백엔드는 정상이지만 파일을 찾을 수 없는 경우
+                  if (errorMsg.includes('404')) {
+                    setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+                  } else {
+                    setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
+                  }
+                }
+              } catch (healthError) {
+                console.error('❌ Health Check 오류:', healthError);
+                setFileContent(`❌ 백엔드 상태 점검 실패.\n\n오류: ${errorMsg}\n\n수동으로 프로그램을 재시작해주세요.`);
+              }
             } else {
-              setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
+              // Electron API 사용 불가 (웹 환경)
+              if (errorMsg.includes('404')) {
+                setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+              } else {
+                setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
+              }
             }
           }
         } else {
@@ -738,14 +889,6 @@ export default function App() {
   // --- Helpers ---
   const updateActiveTab = (updates: Partial<TabItem>) => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...updates } : t));
-    
-    // currentPath가 변경되면 lastFocusedFolder 업데이트
-    if (updates.currentPath && updates.selectedFolder) {
-      setLastFocusedFolder({
-        name: updates.selectedFolder,
-        path: updates.currentPath
-      });
-    }
   };
 
   const addSearchLog = (msg: string) => {
