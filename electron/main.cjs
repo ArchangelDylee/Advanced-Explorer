@@ -88,16 +88,44 @@ function createWindow() {
 
   // 개발 모드면 Vite 서버 주소로, 프로덕션이면 빌드된 파일로
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
-    // 개발자 도구 자동 열기 (필요시 주석 해제)
-    // mainWindow.webContents.openDevTools();
+    // Vite 서버 연결 확인 후 로드
+    const loadViteServer = async () => {
+      const maxRetries = 10;
+      let retries = 0;
+      
+      while (retries < maxRetries) {
+        try {
+          const response = await fetch('http://localhost:5173');
+          if (response.ok) {
+            console.log('✅ Vite 서버 연결 성공');
+            mainWindow.loadURL('http://localhost:5173');
+            // 개발자 도구 자동 열기 (디버깅용)
+            mainWindow.webContents.openDevTools();
+            return;
+          }
+        } catch (error) {
+          retries++;
+          console.log(`⏳ Vite 서버 대기 중... (${retries}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      console.error('❌ Vite 서버 연결 실패 - 수동으로 npm run dev를 실행하세요');
+      mainWindow.loadURL('data:text/html,<h1 style="color:white;font-family:sans-serif;text-align:center;margin-top:100px;">Vite 서버를 찾을 수 없습니다.<br><br>터미널에서 "npm run dev"를 실행하세요.</h1>');
+    };
+    
+    loadViteServer();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
   
   // 로드 에러 핸들링
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('페이지 로드 실패:', errorCode, errorDescription);
+    console.error('❌ 페이지 로드 실패:', errorCode, errorDescription);
+    if (errorCode === -102 || errorCode === -6) {
+      // CONNECTION_REFUSED or FILE_NOT_FOUND
+      console.log('💡 Vite 서버가 실행 중인지 확인하세요: npm run dev');
+    }
   });
 
   // 윈도우가 닫힐 때

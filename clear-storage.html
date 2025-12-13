@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Clear Storage</title>
+</head>
+<body>
+  <h1>LocalStorage 초기화</h1>
+  <button onclick="clearStorage()">초기화 실행</button>
+  <pre id="log"></pre>
+  
+  <script>
+    function clearStorage() {
+      const log = document.getElementById('log');
+      log.textContent = '';
+      
+      // 모든 localStorage 키 출력
+      log.textContent += `현재 저장된 키들:\n`;
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        log.textContent += `  - ${key}\n`;
+      }
+      
+      // localStorage 초기화
+      localStorage.clear();
+      
+      log.textContent += `\n✅ LocalStorage 초기화 완료!\n`;
+      log.textContent += `\n이제 Electron 앱을 재시작하세요.`;
+    }
+  </script>
+</body>
+</html>

@@ -11,8 +11,12 @@ from watchdog.events import FileSystemEventHandler
 from typing import Set
 from database import DatabaseManager
 from indexer import FileIndexer
+import queue
 
 logger = logging.getLogger(__name__)
+
+# 파일 변경 이벤트 큐 (SSE용)
+file_change_queue = queue.Queue()
 
 
 class IndexedFileWatcher(FileSystemEventHandler):
@@ -112,6 +116,13 @@ class IndexedFileWatcher(FileSystemEventHandler):
             self.indexer.index_single_file(file_path)
             logger.info(f"✅ 자동 인덱싱 완료: {os.path.basename(file_path)}")
             
+            # SSE 이벤트 발행
+            file_change_queue.put({
+                'type': 'created',
+                'path': file_path,
+                'name': os.path.basename(file_path)
+            })
+            
         except Exception as e:
             logger.error(f"❌ 파일 생성 처리 오류 [{os.path.basename(file_path)}]: {e}")
         finally:
@@ -153,6 +164,13 @@ class IndexedFileWatcher(FileSystemEventHandler):
             self.indexer.index_single_file(file_path)
             logger.info(f"✅ 자동 재인덱싱 완료: {os.path.basename(file_path)}")
             
+            # SSE 이벤트 발행
+            file_change_queue.put({
+                'type': 'modified',
+                'path': file_path,
+                'name': os.path.basename(file_path)
+            })
+            
         except Exception as e:
             logger.error(f"❌ 파일 수정 처리 오류 [{os.path.basename(file_path)}]: {e}")
         finally:
@@ -181,6 +199,13 @@ class IndexedFileWatcher(FileSystemEventHandler):
             # DB에 삭제 마킹 (물리적 삭제 X)
             self.db.mark_as_deleted(file_path)
             logger.info(f"✅ 삭제 마킹 완료: {os.path.basename(file_path)}")
+            
+            # SSE 이벤트 발행
+            file_change_queue.put({
+                'type': 'deleted',
+                'path': file_path,
+                'name': os.path.basename(file_path)
+            })
             
         except Exception as e:
             logger.error(f"❌ 파일 삭제 처리 오류 [{os.path.basename(file_path)}]: {e}")
@@ -220,6 +245,14 @@ class IndexedFileWatcher(FileSystemEventHandler):
                 time.sleep(0.5)  # 이동 완료 대기
                 self.indexer.index_single_file(dest_path)
                 logger.info(f"✅ 이동된 파일 재인덱싱 완료: {os.path.basename(dest_path)}")
+                
+                # SSE 이벤트 발행 (이동 = 삭제 + 생성)
+                file_change_queue.put({
+                    'type': 'moved',
+                    'oldPath': src_path,
+                    'newPath': dest_path,
+                    'name': os.path.basename(dest_path)
+                })
             else:
                 logger.info(f"⚠️ 이동된 파일은 지원하지 않거나 제외 대상: {os.path.basename(dest_path)}")
             
@@ -343,3 +376,4 @@ if __name__ == "__main__":
             print("\n👋 감시 종료")
     else:
         print(f"⚠️ 테스트 디렉토리가 존재하지 않습니다: {test_dir}")
+

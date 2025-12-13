@@ -375,7 +375,20 @@ export default function App() {
   const logsAbortControllerRef = React.useRef<AbortController | null>(null);
   const statsAbortControllerRef = React.useRef<AbortController | null>(null);
   
-  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+  // activeTab 안전성 보장
+  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0] || {
+    id: 1,
+    title: 'Quick Access',
+    searchText: '',
+    selectedFolder: 'Quick Access',
+    currentPath: '',
+    selectedFile: null,
+    selectedFiles: [],
+    files: [],
+    sortConfig: { key: null, direction: 'asc' as const },
+    history: [],
+    historyIndex: 0
+  };
 
   // Initialize DB statistics
   useEffect(() => {
@@ -436,6 +449,57 @@ export default function App() {
       if (syncInterval) clearInterval(syncInterval);
     };
   }, [isIndexing]); // isIndexing 상태가 변경될 때마다 재설정
+
+  // 📡 실시간 파일 변경 감지 (SSE)
+  useEffect(() => {
+    console.log('📡 SSE 연결 시작...');
+    const eventSource = new EventSource('http://127.0.0.1:5000/api/file-changes/stream');
+    
+    eventSource.onopen = () => {
+      console.log('✅ SSE 연결 성공');
+    };
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const change = JSON.parse(event.data);
+        console.log('📥 파일 변경 이벤트:', change);
+        
+        const currentPath = activeTab?.currentPath || '';
+        const changeDir = change.path ? change.path.substring(0, change.path.lastIndexOf('\\')) : '';
+        
+        // 현재 폴더에 영향을 주는 변경사항만 처리
+        if (currentPath && changeDir.toLowerCase() === currentPath.toLowerCase()) {
+          console.log('🔄 현재 폴더 영향 → 파일 리스트 새로고침');
+          
+          if (change.type === 'deleted') {
+            // 파일 삭제: UI에서 즉시 제거
+            setTabs(prevTabs => prevTabs.map((tab) => 
+              tab.id === activeTabId ? {
+                ...tab,
+                files: tab.files.filter(f => f.path && f.path.toLowerCase() !== change.path.toLowerCase())
+              } : tab
+            ));
+          } else if (change.type === 'created' || change.type === 'modified' || change.type === 'moved') {
+            // 생성/수정/이동: 파일 리스트 다시 읽기 (navigate 직접 호출하지 않음)
+            console.log('📝 파일 변경 감지:', change.type, change.path);
+            // Note: 실시간 업데이트는 수동 새로고침으로 대체 (무한 루프 방지)
+          }
+        }
+      } catch (err) {
+        console.error('❌ SSE 파싱 오류:', err);
+      }
+    };
+    
+    eventSource.onerror = (err) => {
+      console.error('❌ SSE 연결 오류:', err);
+      eventSource.close();
+    };
+    
+    return () => {
+      console.log('📡 SSE 연결 종료');
+      eventSource.close();
+    };
+  }, [activeTabId]); // navigate 제거 - 무한 루프 방지
 
   // Auto-refresh indexing DB view every 1 minute
   useEffect(() => {

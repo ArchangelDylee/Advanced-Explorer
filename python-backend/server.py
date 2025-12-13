@@ -4,7 +4,7 @@ API 서버 - Electron과 Python 백엔드 통신
 Flask 기반 REST API
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import logging
 import threading
@@ -221,6 +221,46 @@ def cleanup():
 
 
 # ============== API 엔드포인트 ==============
+
+@app.route('/api/file-changes/stream', methods=['GET'])
+def file_changes_stream():
+    """
+    파일 변경 이벤트 스트림 (Server-Sent Events)
+    
+    실시간으로 파일 생성/수정/삭제/이동 이벤트를 프론트엔드에 전송
+    
+    Returns:
+        SSE Stream with events:
+        - created: 파일 생성
+        - modified: 파일 수정
+        - deleted: 파일 삭제
+        - moved: 파일 이동
+    """
+    def generate():
+        logger.info("📡 SSE 클라이언트 연결됨")
+        try:
+            while True:
+                # 큐에서 이벤트 가져오기 (타임아웃 30초)
+                try:
+                    change = file_change_queue.get(timeout=30)
+                    data = json.dumps(change, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
+                    logger.info(f"📤 SSE 이벤트 전송: {change['type']} - {change.get('name', 'unknown')}")
+                except:
+                    # 타임아웃 시 heartbeat 전송 (연결 유지)
+                    yield f": heartbeat\n\n"
+        except GeneratorExit:
+            logger.info("📡 SSE 클라이언트 연결 종료")
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
