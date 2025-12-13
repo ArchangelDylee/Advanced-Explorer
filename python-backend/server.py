@@ -58,6 +58,7 @@ from database import DatabaseManager
 from indexer import FileIndexer
 from search import SearchEngine
 from summarizer import ContentSummarizer
+from file_watcher import FileSystemWatcher
 
 # 로그 디렉토리 생성
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
@@ -94,11 +95,12 @@ db_manager: DatabaseManager = None
 indexer: FileIndexer = None
 search_engine: SearchEngine = None
 summarizer: ContentSummarizer = None
+file_watcher: FileSystemWatcher = None
 
 
 def initialize():
     """백엔드 초기화 (설정 파일 기반)"""
-    global db_manager, indexer, search_engine, summarizer
+    global db_manager, indexer, search_engine, summarizer, file_watcher
     
     logger.info("========================================")
     logger.info("Python 백엔드 초기화 (가상환경)")
@@ -149,26 +151,37 @@ def initialize():
     summarizer = ContentSummarizer()
     logger.info("요약 엔진 초기화 완료")
     
+    # 파일 시스템 감시 초기화 및 시작
+    file_watcher = FileSystemWatcher(db_manager, indexer)
+    file_watcher.start()
+    logger.info("파일 시스템 감시 시작 완료")
+    
     # 종료 시 정리 함수 등록
     atexit.register(cleanup)
 
 
 def cleanup():
     """백엔드 종료 시 정리 - 쓰레드 안전 종료 및 파일 Lock 해제"""
-    global indexer, db_manager
+    global indexer, db_manager, file_watcher
     
     logger.info("=" * 60)
     logger.info("백엔드 종료 프로세스 시작...")
     logger.info("=" * 60)
     
     try:
-        # 1. 인덱서 리소스 정리
+        # 1. 파일 시스템 감시 중지
+        if file_watcher:
+            logger.info("파일 시스템 감시 중지 중...")
+            file_watcher.stop()
+            logger.info("✓ 파일 시스템 감시 중지 완료")
+        
+        # 2. 인덱서 리소스 정리
         if indexer:
             logger.info("인덱서 정리 중...")
             indexer.cleanup()
             logger.info("✓ 인덱서 정리 완료")
         
-        # 2. 데이터베이스 연결 종료 및 Lock 해제
+        # 3. 데이터베이스 연결 종료 및 Lock 해제
         if db_manager:
             logger.info("데이터베이스 연결 종료 중...")
             try:
@@ -182,7 +195,7 @@ def cleanup():
             db_manager.close()
             logger.info("✓ 데이터베이스 연결 종료됨")
         
-        # 3. 로깅 핸들러 종료 및 Lock 해제
+        # 4. 로깅 핸들러 종료 및 Lock 해제
         logger.info("로그 파일 핸들러 종료 중...")
         try:
             # 모든 로깅 핸들러 flush 및 close
@@ -318,8 +331,14 @@ def start_indexing():
             logger.info(f"인덱싱 진행: [{current}/{total}] {path}")
         
         success = indexer.start_indexing(paths, progress_callback)
-        
+
         if success:
+            # 인덱싱 시작 시 자동으로 파일 감시 추가
+            for path in paths:
+                if os.path.isdir(path):
+                    file_watcher.add_watch_path(path)
+                    logger.info(f"📡 파일 감시 추가: {path}")
+            
             return jsonify({
                 'status': 'started',
                 'message': '인덱싱이 시작되었습니다.'
@@ -687,6 +706,30 @@ def statistics():
             'total_size': 0,
             'file_types': {}
         }), 200  # 500 대신 200으로 반환하되 빈 통계
+
+
+@app.route('/api/cleanup/deleted-files', methods=['POST'])
+def cleanup_deleted_files():
+    """
+    오래된 삭제 마킹 파일 정리
+    Body: {
+        "days_old": 30  (선택, 기본: 30일)
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        days_old = data.get('days_old', 30)
+        
+        count = db_manager.cleanup_deleted_files(days_old)
+        
+        return jsonify({
+            'status': 'success',
+            'cleaned_count': count,
+            'message': f'{count}개의 오래된 삭제 파일이 정리되었습니다.'
+        })
+    except Exception as e:
+        logger.error(f"삭제 파일 정리 오류: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/database/clear', methods=['POST'])

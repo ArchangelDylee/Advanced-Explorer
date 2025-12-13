@@ -470,6 +470,57 @@ class FileIndexer:
         self.current_thread.start()
         return True
     
+    def index_single_file(self, file_path: str) -> bool:
+        """
+        단일 파일 즉시 인덱싱 (파일 감시용)
+        
+        Args:
+            file_path: 인덱싱할 파일 경로
+            
+        Returns:
+            bool: 인덱싱 성공 여부
+        """
+        try:
+            # 파일 존재 확인
+            if not os.path.isfile(file_path):
+                logger.warning(f"⚠️ 파일이 존재하지 않음: {file_path}")
+                return False
+            
+            # 파일 크기 체크
+            file_size = os.path.getsize(file_path)
+            if file_size > MAX_FILE_SIZE:
+                logger.warning(f"⚠️ 파일 크기 초과 ({file_size / 1024 / 1024:.1f}MB): {file_path}")
+                return False
+            
+            # 텍스트 추출
+            content = self._extract_text_safe(file_path)
+            
+            if not content:
+                logger.warning(f"⚠️ 텍스트 추출 실패: {file_path}")
+                return False
+            
+            # DB에 저장 (기존 파일이면 업데이트, 없으면 삽입)
+            current_mtime = os.path.getmtime(file_path)
+            file_info = self.db.get_file_info(file_path)  # 삭제 여부 무관하게 조회
+            
+            if file_info is not None:
+                # 기존 파일 업데이트 (deleted=0으로 복원, 중복 레코드 방지)
+                self.db.update_file(file_path, content, current_mtime)
+                if file_info['deleted']:
+                    logger.info(f"♻️ 삭제된 파일 복원 및 재인덱싱: {os.path.basename(file_path)}")
+                else:
+                    logger.info(f"🔄 파일 재인덱싱 완료: {os.path.basename(file_path)}")
+            else:
+                # 새 파일 삽입
+                self.db.insert_file(file_path, content, current_mtime)
+                logger.info(f"✅ 파일 인덱싱 완료: {os.path.basename(file_path)}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ 단일 파일 인덱싱 오류 [{file_path}]: {e}")
+            return False
+    
     def _write_indexing_log(self, status: str, path: str, detail: str):
         """
         통합 인덱싱 로그 기록 (indexing_log.txt)
