@@ -98,7 +98,7 @@ class SearchEngine:
         try:
             results = {}
             
-            # 1. 파일명 검색 (파일 시스템)
+            # 1. 파일명 검색 (파일 시스템) - search_path가 있을 때만
             if search_path:
                 filename_results = self._search_filesystem(query, search_path)
                 for result in filename_results:
@@ -112,6 +112,19 @@ class SearchEngine:
                         'source': 'filesystem',
                         'indexed': is_indexed
                     }
+            
+            # 1-2. search_path가 없을 때는 DB에서 파일명으로도 검색
+            if not search_path:
+                logger.info(f"search_path 없음 - DB에서 파일명 포함 검색 실행")
+                db_filename_results = self.db.search_by_path(query, max_results)
+                for result in db_filename_results:
+                    file_path = result['path']
+                    if file_path not in results:
+                        results[file_path] = {
+                            **result,
+                            'source': 'filesystem',  # 파일명 매칭
+                            'indexed': True
+                        }
             
             # 2. 내용 검색 (DB) - include_content=True인 경우만
             if include_content:

@@ -396,6 +396,68 @@ class DatabaseManager:
             logger.error(f"삭제 파일 정리 오류: {e}")
             return 0
     
+    def search_by_path(self, query: str, limit: int = 100) -> List[dict]:
+        """
+        파일명(path)으로 검색
+        
+        Args:
+            query: 검색 쿼리
+            limit: 최대 결과 개수
+        
+        Returns:
+            검색 결과 리스트 [{path, content, mtime, name, extension, size}, ...]
+        """
+        try:
+            import os
+            from datetime import datetime
+            
+            # LIKE 검색으로 파일명 검색
+            cursor = self.conn.execute("""
+                SELECT path, content, mtime
+                FROM files_fts
+                WHERE path LIKE ? AND deleted = '0'
+                LIMIT ?
+            """, (f'%{query}%', limit))
+            
+            results = []
+            for row in cursor.fetchall():
+                path = row['path']
+                name = os.path.basename(path)
+                extension = os.path.splitext(name)[1].lstrip('.')
+                
+                # 실제 파일 크기 확인
+                size = 0
+                mtime_iso = None
+                if os.path.exists(path):
+                    try:
+                        stat = os.stat(path)
+                        size = stat.st_size
+                        mtime_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    except:
+                        pass
+                
+                if not mtime_iso:
+                    mtime_iso = datetime.fromtimestamp(float(row['mtime'])).isoformat() if row['mtime'] else None
+                
+                results.append({
+                    'path': path,
+                    'name': name,
+                    'directory': os.path.dirname(path),
+                    'extension': extension or 'file',
+                    'size': size,
+                    'mtime': mtime_iso,
+                    'content': row['content'][:200] if row['content'] else '',
+                    'rank': 1.0,  # 파일명 매칭
+                    'preview': f'파일명 매칭: {name}'
+                })
+            
+            logger.info(f"✓ 파일명 검색 완료: '{query}' → {len(results)}개 결과")
+            return results
+            
+        except sqlite3.Error as e:
+            logger.error(f"파일명 검색 오류: {e}")
+            return []
+    
     def search(self, query: str, limit: int = 100) -> List[dict]:
         """
         전문 검색 (Full-Text Search)
@@ -421,13 +483,13 @@ class DatabaseManager:
                 # 따옴표 제거
                 exact_phrase = query[1:-1]
                 
-                # LIKE 검색 사용 (정확한 문장 검색, 삭제되지 않은 파일만)
+                # LIKE 검색 사용 (정확한 문장 검색, 파일명+내용, 삭제되지 않은 파일만)
                 cursor = self.conn.execute("""
                     SELECT path, content, mtime, 0 as rank
                     FROM files_fts
-                    WHERE content LIKE ? AND deleted = '0'
+                    WHERE (content LIKE ? OR path LIKE ?) AND deleted = '0'
                     LIMIT ?
-                """, (f'%{exact_phrase}%', limit))
+                """, (f'%{exact_phrase}%', f'%{exact_phrase}%', limit))
                 
                 results = []
                 for row in cursor.fetchall():
