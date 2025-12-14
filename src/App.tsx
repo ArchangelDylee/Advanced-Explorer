@@ -361,6 +361,8 @@ export default function App() {
   const [dbTotalCount, setDbTotalCount] = useState<number>(0);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
+  const [backendConnected, setBackendConnected] = useState<boolean>(true);
+  const [isCheckingBackend, setIsCheckingBackend] = useState<boolean>(false);
   const [fileSummary, setFileSummary] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -450,6 +452,79 @@ export default function App() {
       if (syncInterval) clearInterval(syncInterval);
     };
   }, [isIndexing]); // isIndexing 상태가 변경될 때마다 재설정
+
+  // 🔍 백엔드 연결 상태 모니터링 (Sleep 모드 복귀 대응)
+  useEffect(() => {
+    let checkInterval: NodeJS.Timeout | null = null;
+    
+    const checkBackendHealth = async () => {
+      if (isCheckingBackend) return;
+      
+      try {
+        setIsCheckingBackend(true);
+        const response = await fetch('http://127.0.0.1:5000/api/health', {
+          method: 'GET',
+          signal: AbortSignal.timeout(3000)
+        });
+        
+        if (response.ok) {
+          if (!backendConnected) {
+            console.log('✅ 백엔드 연결 복구됨');
+            setBackendConnected(true);
+            addSearchLog('✅ 백엔드 서버 연결 복구');
+          }
+        } else {
+          throw new Error('Backend unhealthy');
+        }
+      } catch (error) {
+        console.error('❌ 백엔드 연결 실패:', error);
+        
+        if (backendConnected) {
+          setBackendConnected(false);
+          addSearchLog('⚠️ 백엔드 서버 연결 끊김 - 재시작 시도 중...');
+          
+          // Electron API로 백엔드 재시작 요청
+          if (typeof window !== 'undefined' && (window as any).electronAPI) {
+            try {
+              const result = await (window as any).electronAPI.restartBackend();
+              if (result.success) {
+                addSearchLog('✅ 백엔드 서버 재시작 완료');
+                setBackendConnected(true);
+              } else {
+                addSearchLog('❌ 백엔드 서버 재시작 실패 - 수동으로 재시작 필요');
+              }
+            } catch (e) {
+              addSearchLog('❌ 백엔드 재시작 요청 실패');
+            }
+          }
+        }
+      } finally {
+        setIsCheckingBackend(false);
+      }
+    };
+    
+    // 페이지 가시성 변경 감지 (Sleep 복귀 감지)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('👁️ 페이지 활성화 - 백엔드 상태 확인');
+        checkBackendHealth();
+      }
+    };
+    
+    // 초기 체크
+    checkBackendHealth();
+    
+    // 30초마다 주기적으로 체크
+    checkInterval = setInterval(checkBackendHealth, 30000);
+    
+    // 가시성 변경 이벤트 리스너
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      if (checkInterval) clearInterval(checkInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [backendConnected, isCheckingBackend]);
 
   // 📡 실시간 파일 변경 감지 (SSE)
   useEffect(() => {
@@ -895,6 +970,8 @@ export default function App() {
             if (typeof window !== 'undefined' && (window as any).electronAPI?.checkBackendHealth) {
               console.log('🔍 백엔드 상태 점검 중...');
               setFileContent('🔍 백엔드 프로세스 점검 중...\n\n잠시만 기다려주세요.');
+              addSearchLog('🔍 백엔드 프로세스 점검 중...');
+              setBackendConnected(false);
               
               try {
                 const healthCheck = await (window as any).electronAPI.checkBackendHealth();
@@ -903,6 +980,7 @@ export default function App() {
                 if (!healthCheck.healthy) {
                   console.warn('⚠️ 백엔드가 응답하지 않습니다. 재시작 시도...');
                   setFileContent('⚠️ 백엔드 프로세스가 응답하지 않습니다.\n\n🔄 자동 재시작 중...');
+                  addSearchLog('⚠️ 백엔드 응답 없음 - 재시작 시도');
                   
                   const restartResult = await (window as any).electronAPI.restartBackend();
                   console.log('🔄 재시작 결과:', restartResult);
@@ -910,6 +988,8 @@ export default function App() {
                   if (restartResult.success) {
                     console.log('✅ 백엔드 재시작 완료. 재조회 시도...');
                     setFileContent('✅ 백엔드 재시작 완료.\n\n🔄 파일 내용 다시 조회 중...');
+                    addSearchLog('✅ 백엔드 재시작 완료');
+                    setBackendConnected(true);
                     
                     // 백엔드가 완전히 시작될 때까지 대기
                     await new Promise(resolve => setTimeout(resolve, 3000));
@@ -920,21 +1000,26 @@ export default function App() {
                       if (detail && detail.content) {
                         setFileContent(detail.content);
                         console.log('✅ 재조회 성공!');
+                        addSearchLog('✅ 파일 내용 조회 성공');
                       } else {
-                        setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+                        setFileContent('⚠️ 이 파일은 아직 인덱싱되지 않았습니다\n\n이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.\n\n💡 원측 상단의 "색인" 탭에서 이 파일이 있는 폴더를\n선택하고 "색인 시작" 버튼을 클릭하세요.');
                       }
                     } catch (retryError) {
                       console.error('❌ 재조회 실패:', retryError);
-                      setFileContent('❌ 백엔드가 재시작되었지만 파일을 조회할 수 없습니다.\n\n파일이 인덱싱되지 않았을 수 있습니다.');
+                      setFileContent('⚠️ 이 파일은 아직 인덱싱되지 않았습니다\n\n이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.\n\n💡 원측 상단의 "색인" 탭에서 이 파일이 있는 폴더를\n선택하고 "색인 시작" 버튼을 클릭하세요.');
+                      addSearchLog('⚠️ 파일이 인덱싱되지 않음');
                     }
                   } else {
                     console.error('❌ 백엔드 재시작 실패');
                     setFileContent('❌ 백엔드 재시작에 실패했습니다.\n\n수동으로 프로그램을 재시작해주세요.');
+                    addSearchLog('❌ 백엔드 재시작 실패');
                   }
                 } else {
                   // 백엔드는 정상이지만 파일을 찾을 수 없는 경우
+                  setBackendConnected(true);
                   if (errorMsg.includes('404')) {
-                    setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
+                    setFileContent('⚠️ 이 파일은 아직 인덱싱되지 않았습니다\n\n이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.\n\n💡 원측 상단의 "색인" 탭에서 이 파일이 있는 폴더를\n선택하고 "색인 시작" 버튼을 클릭하세요.');
+                    addSearchLog('ℹ️ 파일이 DB에 없음 - 인덱싱 필요');
                   } else {
                     setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
                   }
@@ -942,6 +1027,7 @@ export default function App() {
               } catch (healthError) {
                 console.error('❌ Health Check 오류:', healthError);
                 setFileContent(`❌ 백엔드 상태 점검 실패.\n\n오류: ${errorMsg}\n\n수동으로 프로그램을 재시작해주세요.`);
+                addSearchLog('❌ 백엔드 상태 점검 실패');
               }
             } else {
               // Electron API 사용 불가 (웹 환경)

@@ -390,32 +390,66 @@ async function restartPythonBackend() {
   try {
     console.log('🔄 Python 백엔드 재시작 중...');
     
-    // 기존 프로세스 종료
-    if (pythonProcess) {
-      pythonProcess.kill();
-      pythonProcess = null;
-      pythonPid = null;
-      await sleep(1000);
+    // 개발 모드 체크
+    if (isDev) {
+      console.log('⚠️ 개발 모드: 외부 Python 프로세스 강제 종료 후 재시작');
+      
+      // 모든 Python 프로세스 강제 종료 (Windows)
+      try {
+        const { execSync } = require('child_process');
+        execSync('taskkill /F /IM python.exe 2>nul', { stdio: 'ignore' });
+        console.log('✓ Python 프로세스 종료 완료');
+      } catch (e) {
+        console.log('⚠️ Python 프로세스 종료 실패 (이미 종료되었을 수 있음)');
+      }
+      
+      await sleep(2000);
+      
+      // PowerShell로 백엔드 서버 재시작
+      try {
+        const serverPath = path.join(__dirname, '..', 'python-backend', 'server.py');
+        
+        const psCommand = `Start-Process powershell -ArgumentList "-NoExit", "-Command", "python '${serverPath}'"`;
+        
+        spawn('powershell', ['-Command', psCommand], {
+          detached: true,
+          stdio: 'ignore'
+        }).unref();
+        
+        console.log('✓ 백엔드 서버 재시작 명령 전송');
+      } catch (e) {
+        console.error('❌ 백엔드 서버 재시작 실패:', e);
+        return false;
+      }
+      
+    } else {
+      // 프로덕션 모드: 기존 로직
+      if (pythonProcess) {
+        pythonProcess.kill();
+        pythonProcess = null;
+        pythonPid = null;
+        await sleep(1000);
+      }
+      
+      const newProcess = startPythonBackend();
+      if (!newProcess) {
+        return false;
+      }
     }
     
-    // 새 프로세스 시작
-    const newProcess = startPythonBackend();
-    
-    if (!newProcess) {
-      return false;
-    }
-    
-    // 시작 대기 (최대 10초)
-    for (let i = 0; i < 10; i++) {
+    // 시작 대기 (최대 15초)
+    console.log('⏳ 백엔드 시작 대기 중...');
+    for (let i = 0; i < 15; i++) {
       await sleep(1000);
       const healthOk = await checkBackendHealth();
       if (healthOk) {
         console.log('✅ Python 백엔드 재시작 완료');
         return true;
       }
+      console.log(`   ${i + 1}/15초 경과...`);
     }
     
-    console.error('❌ Python 백엔드 재시작 후 응답 없음');
+    console.error('❌ Python 백엔드 재시작 후 응답 없음 (15초 타임아웃)');
     return false;
     
   } catch (error) {
