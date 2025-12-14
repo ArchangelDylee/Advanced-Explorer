@@ -80,7 +80,6 @@ interface ColWidthsState {
 
 interface SearchOptionsState {
   content: boolean;
-  subfolder: boolean;
 }
 
 interface TypeFiltersState {
@@ -315,7 +314,7 @@ export default function App() {
   const [layout, setLayout] = useLocalStorage<LayoutState>('layout', { sidebarWidth: 250, fileListWidth: 600, bottomPanelHeight: 200, favoritesHeight: 180, searchLogWidth: 600 });
   const [colWidths, setColWidths] = useLocalStorage<ColWidthsState>('colWidths', { name: 350, size: 100, date: 150 });
   const [searchHistory, setSearchHistory] = useLocalStorage<string[]>('searchHistory', ['기획서', '2023년 정산']);
-  const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true, subfolder: true });
+  const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true });
   const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, csv: true, etc: true });
   const [folderStructure, setFolderStructure] = useLocalStorage<FolderNode[]>('folderStructure', MOCK_FOLDERS_INITIAL);
 
@@ -2042,10 +2041,12 @@ export default function App() {
     try {
       // 백엔드 검색 API 호출
       addSearchLog(`📡 백엔드 검색 엔진에 요청 중...`);
-      addSearchLog(`   - 파일명 검색: ${searchOptions.content ? '✓ (항상 실행)' : '✓'}`);
+      addSearchLog(`   - 파일명 검색: ✓ (항상 실행)`);
       addSearchLog(`   - 내용 검색: ${searchOptions.content ? '✓ (활성화)' : '✗ (비활성화)'}`);
+      addSearchLog(`   - 검색 경로: ${activeTab.currentPath || '전체'} (하위 폴더 포함)`);
       
-      const searchPath = searchOptions.subfolder && activeTab.currentPath ? activeTab.currentPath : null;
+      // 항상 현재 디렉토리 및 하위 폴더 포함 검색
+      const searchPath = activeTab.currentPath || null;
       const response = await BackendAPI.searchCombined(
         searchTerm, 
         searchPath as any, 
@@ -2653,7 +2654,6 @@ export default function App() {
           </button>
           <div className="w-4" />
           <Checkbox label="내용 포함" checked={searchOptions.content} onChange={(v) => setSearchOptions(p => ({...p, content: v}))} />
-          <Checkbox label="하위 폴더" checked={searchOptions.subfolder} onChange={(v) => setSearchOptions(p => ({...p, subfolder: v}))} />
           <div className="flex-1" />
         </div>
 
