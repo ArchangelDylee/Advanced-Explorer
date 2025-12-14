@@ -2172,7 +2172,11 @@ export default function App() {
           };
         });
         
-        updateActiveTab({ files: fileItems });
+        // 검색 결과와 함께 검색어도 명시적으로 저장 (하이라이트용)
+        updateActiveTab({ 
+          files: fileItems,
+          searchText: searchTerm  // 검색어 유지
+        });
         setIsSearching(false);
       }, 50 * results.length + 200);
       
