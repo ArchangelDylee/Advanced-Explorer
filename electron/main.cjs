@@ -405,18 +405,25 @@ async function restartPythonBackend() {
       
       await sleep(2000);
       
-      // PowerShell로 백엔드 서버 재시작
+      // Python 백엔드 서버 재시작 (직접 spawn)
       try {
+        const pythonExe = path.join(__dirname, '..', config.python.pythonExecutable);
         const serverPath = path.join(__dirname, '..', 'python-backend', 'server.py');
         
-        const psCommand = `Start-Process powershell -ArgumentList "-NoExit", "-Command", "python '${serverPath}'"`;
-        
-        spawn('powershell', ['-Command', psCommand], {
+        // Python 프로세스 직접 시작 (detached 모드)
+        const pythonBackend = spawn(pythonExe, [serverPath], {
           detached: true,
-          stdio: 'ignore'
-        }).unref();
+          stdio: 'ignore',
+          cwd: path.join(__dirname, '..', 'python-backend'),
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: 'utf-8',
+            PYTHONUTF8: '1'
+          }
+        });
         
-        console.log('✓ 백엔드 서버 재시작 명령 전송');
+        pythonBackend.unref();
+        console.log('✓ 백엔드 서버 재시작 명령 전송 (PID: 새 프로세스)');
       } catch (e) {
         console.error('❌ 백엔드 서버 재시작 실패:', e);
         return false;
