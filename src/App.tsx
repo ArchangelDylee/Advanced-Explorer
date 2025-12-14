@@ -21,6 +21,7 @@ interface FileItem {
   skipped?: boolean; // Skip 여부
   skipReason?: string; // Skip 사유
   matchType?: 'filename' | 'content' | 'both'; // 검색 매칭 타입
+  deleted?: boolean; // 삭제된 파일 여부
 }
 
 interface FolderNode {
@@ -920,7 +921,12 @@ export default function App() {
                 const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
                 if (detail && detail.content) {
                   console.log('✅ OCR 텍스트 로드 성공');
-                  setFileContent(detail.content);
+                  // 삭제된 파일 경고 표시
+                  if (detail.deleted) {
+                    setFileContent(`⚠️ 이 파일은 삭제되었습니다 (DB에만 남아있음)\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nOCR 텍스트:\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${detail.content}`);
+                  } else {
+                    setFileContent(detail.content);
+                  }
                 } else {
                   console.log('ℹ️ OCR 텍스트 없음');
                   if (!fileContent?.includes('⚠️')) {
@@ -997,9 +1003,14 @@ export default function App() {
           try {
             const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
             console.log('📦 API 응답:', detail);
-            
+
             if (detail && detail.content) {
-              setFileContent(detail.content);
+              // 삭제된 파일 경고 표시
+              if (detail.deleted) {
+                setFileContent(`⚠️ 이 파일은 삭제되었습니다 (DB에만 남아있음)\n\n파일 경로: ${activeTab.selectedFile.path}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n인덱싱된 내용:\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${detail.content}`);
+              } else {
+                setFileContent(detail.content);
+              }
             } else {
               setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
             }
@@ -1039,7 +1050,12 @@ export default function App() {
                     try {
                       const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
                       if (detail && detail.content) {
-                        setFileContent(detail.content);
+                        // 삭제된 파일 경고 표시
+                        if (detail.deleted) {
+                          setFileContent(`⚠️ 이 파일은 삭제되었습니다 (DB에만 남아있음)\n\n파일 경로: ${activeTab.selectedFile.path}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n인덱싱된 내용:\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${detail.content}`);
+                        } else {
+                          setFileContent(detail.content);
+                        }
                         console.log('✅ 재조회 성공!');
                         addSearchLog('✅ 파일 내용 조회 성공');
                       } else {
@@ -2151,7 +2167,8 @@ export default function App() {
             type: result.extension || 'file',
             path: result.path,
             indexed: result.indexed || false,  // 인덱싱 여부 추가
-            matchType: matchType  // 매칭 타입 추가
+            matchType: matchType,  // 매칭 타입 추가
+            deleted: result.deleted || false  // 삭제 여부 추가
           };
         });
         
@@ -2852,19 +2869,27 @@ export default function App() {
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
                         <span className="truncate">{file.name}</span>
                         {file.matchType && (
-                          <span 
+                          <span
                             className="ml-2 px-1.5 py-0.5 flex-shrink-0 text-[9px] font-bold rounded"
                             style={{
                               backgroundColor: file.matchType === 'filename' ? '#3b82f6' : file.matchType === 'content' ? '#10b981' : '#8b5cf6',
                               color: 'white'
                             }}
                             title={
-                              file.matchType === 'filename' ? '파일명에서 검색어 발견' : 
-                              file.matchType === 'content' ? '파일 내용에서 검색어 발견' : 
+                              file.matchType === 'filename' ? '파일명에서 검색어 발견' :
+                              file.matchType === 'content' ? '파일 내용에서 검색어 발견' :
                               '파일명과 내용 모두에서 검색어 발견'
                             }
                           >
                             {file.matchType === 'filename' ? '파일명' : file.matchType === 'content' ? '내용만' : '파일.내용'}
+                          </span>
+                        )}
+                        {file.deleted && (
+                          <span
+                            className="ml-2 px-1.5 py-0.5 flex-shrink-0 text-[9px] font-bold rounded bg-red-600 text-white"
+                            title="이 파일은 삭제되었습니다 (DB에만 남아있음)"
+                          >
+                            삭제됨
                           </span>
                         )}
                         {file.indexed !== undefined && (

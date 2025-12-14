@@ -754,11 +754,13 @@ def get_indexed_content():
             logger.info("=" * 80)
         
         if results:
+            is_deleted = results['deleted'] == '1'
             return jsonify({
                 'indexed': True,
                 'path': file_path,
                 'content': results['content'],
-                'mtime': results['mtime']
+                'mtime': results['mtime'],
+                'deleted': is_deleted  # 삭제 여부 추가
             })
         else:
             return jsonify({

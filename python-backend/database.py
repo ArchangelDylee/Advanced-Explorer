@@ -411,11 +411,11 @@ class DatabaseManager:
             import os
             from datetime import datetime
             
-            # LIKE 검색으로 파일명 검색
+            # LIKE 검색으로 파일명 검색 (삭제된 파일 포함)
             cursor = self.conn.execute("""
-                SELECT path, content, mtime
+                SELECT path, content, mtime, deleted
                 FROM files_fts
-                WHERE path LIKE ? AND deleted = '0'
+                WHERE path LIKE ?
                 LIMIT ?
             """, (f'%{query}%', limit))
             
@@ -424,6 +424,7 @@ class DatabaseManager:
                 path = row['path']
                 name = os.path.basename(path)
                 extension = os.path.splitext(name)[1].lstrip('.')
+                is_deleted = row['deleted'] == '1'
                 
                 # 실제 파일 크기 확인
                 size = 0
@@ -448,7 +449,8 @@ class DatabaseManager:
                     'mtime': mtime_iso,
                     'content': row['content'][:200] if row['content'] else '',
                     'rank': 1.0,  # 파일명 매칭
-                    'preview': f'파일명 매칭: {name}'
+                    'preview': f'파일명 매칭: {name}',
+                    'deleted': is_deleted  # 삭제 여부 추가
                 })
             
             logger.info(f"✓ 파일명 검색 완료: '{query}' → {len(results)}개 결과")
@@ -483,13 +485,13 @@ class DatabaseManager:
                 # 따옴표 제거
                 exact_phrase = query[1:-1]
                 
-                # LIKE 검색 사용 (정확한 문장 검색, 파일명+내용, 삭제되지 않은 파일만)
-                cursor = self.conn.execute("""
-                    SELECT path, content, mtime, 0 as rank
-                    FROM files_fts
-                    WHERE (content LIKE ? OR path LIKE ?) AND deleted = '0'
-                    LIMIT ?
-                """, (f'%{exact_phrase}%', f'%{exact_phrase}%', limit))
+            # LIKE 검색 사용 (정확한 문장 검색, 파일명+내용, 삭제된 파일 포함)
+            cursor = self.conn.execute("""
+                SELECT path, content, mtime, deleted, 0 as rank
+                FROM files_fts
+                WHERE (content LIKE ? OR path LIKE ?)
+                LIMIT ?
+            """, (f'%{exact_phrase}%', f'%{exact_phrase}%', limit))
                 
                 results = []
                 for row in cursor.fetchall():
@@ -497,20 +499,21 @@ class DatabaseManager:
                         'path': row['path'],
                         'content': row['content'][:500],  # 처음 500자만
                         'mtime': row['mtime'],
-                        'rank': row['rank']
+                        'rank': row['rank'],
+                        'deleted': row['deleted'] == '1'  # 삭제 여부
                     })
                 
                 logger.info(f"LIKE 정확한 문장 검색 완료: '{exact_phrase}' - {len(results)}개 결과")
                 return results
             
-            # 일반 FTS5 검색
+            # 일반 FTS5 검색 (삭제된 파일 포함)
             fts_query = self._convert_to_fts5_query(query)
             logger.info(f"🔍 FTS5 검색 시작: 원본='{query}', FTS쿼리='{fts_query}'")
             
             cursor = self.conn.execute("""
-                SELECT path, content, mtime, rank
+                SELECT path, content, mtime, deleted, rank
                 FROM files_fts
-                WHERE files_fts MATCH ? AND deleted = '0'
+                WHERE files_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
             """, (fts_query, limit))
@@ -521,7 +524,8 @@ class DatabaseManager:
                     'path': row['path'],
                     'content': row['content'][:500],  # 처음 500자만
                     'mtime': row['mtime'],
-                    'rank': row['rank']
+                    'rank': row['rank'],
+                    'deleted': row['deleted'] == '1'  # 삭제 여부
                 })
             
             logger.info(f"✓ FTS5 검색 완료: '{query}' → {len(results)}개 결과")
