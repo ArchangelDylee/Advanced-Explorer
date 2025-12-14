@@ -58,7 +58,7 @@ from database import DatabaseManager
 from indexer import FileIndexer
 from search import SearchEngine
 from summarizer import ContentSummarizer
-from file_watcher import FileSystemWatcher
+from file_watcher import FileSystemWatcher, file_change_queue
 
 # 로그 디렉토리 생성
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
