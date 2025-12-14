@@ -588,11 +588,71 @@ function setupPowerMonitoring() {
   // 화면 잠금
   powerMonitor.on('lock-screen', () => {
     console.log('🔒 화면이 잠겼습니다');
+    console.log('📌 백엔드 상태 저장 중...');
+    
+    // 잠금 시 백엔드 상태 저장 (Sleep과 동일한 로직)
+    try {
+      fetch('http://127.0.0.1:5000/api/health', { 
+        signal: AbortSignal.timeout(2000) 
+      })
+        .then(response => {
+          if (response.ok) {
+            console.log('✓ 화면 잠금 시 백엔드 정상 작동 중');
+          }
+        })
+        .catch(() => {
+          console.log('⚠️ 화면 잠금 시 백엔드 응답 없음');
+        });
+    } catch (error) {
+      console.error('❌ 화면 잠금 시 백엔드 상태 확인 실패:', error);
+    }
   });
   
   // 화면 잠금 해제
-  powerMonitor.on('unlock-screen', () => {
+  powerMonitor.on('unlock-screen', async () => {
     console.log('🔓 화면 잠금이 해제되었습니다');
+    console.log('========================================');
+    console.log('🔍 백엔드 프로세스 상태 점검 시작');
+    console.log('========================================');
+    
+    // 약간의 지연 후 상태 확인 (시스템이 안정화될 시간 제공)
+    setTimeout(async () => {
+      try {
+        console.log('1️⃣ 백엔드 Health Check 중...');
+        const healthOk = await checkBackendHealth();
+        
+        if (!healthOk) {
+          console.error('❌ 백엔드 응답 없음 - 자동 재시작 시도');
+          const restarted = await restartPythonBackend();
+          
+          if (restarted) {
+            console.log('✅ 백엔드 재시작 완료 (화면 잠금 해제 후)');
+            
+            // 윈도우에 알림 전송
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('backend-restarted', {
+                message: '화면 잠금 해제 후 백엔드가 재시작되었습니다'
+              });
+            }
+          } else {
+            console.error('❌ 백엔드 재시작 실패 (화면 잠금 해제 후)');
+            
+            // 사용자에게 알림
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('backend-restart-failed', {
+                message: '백엔드 재시작 실패 - 수동으로 프로그램을 재시작해주세요'
+              });
+            }
+          }
+        } else {
+          console.log('✅ 백엔드 정상 작동 중 (화면 잠금 해제 후)');
+        }
+        
+        console.log('========================================');
+      } catch (error) {
+        console.error('❌ 화면 잠금 해제 후 백엔드 점검 오류:', error);
+      }
+    }, 2000); // 2초 대기 (시스템 안정화)
   });
   
   console.log('✓ 절전 모드 모니터링 활성화 완료');

@@ -526,6 +526,48 @@ export default function App() {
     };
   }, [backendConnected, isCheckingBackend]);
 
+  // 📡 Electron 이벤트 리스너 (화면 잠금 해제, Sleep 복귀 등)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+      const electronAPI = (window as any).electronAPI;
+      
+      // 백엔드 재시작 성공 이벤트
+      if (electronAPI.onBackendRestarted) {
+        electronAPI.onBackendRestarted((data: any) => {
+          console.log('🔔 백엔드 재시작 알림:', data);
+          addSearchLog(`✅ ${data.message}`);
+          setBackendConnected(true);
+        });
+      }
+      
+      // 백엔드 재시작 실패 이벤트
+      if (electronAPI.onBackendRestartFailed) {
+        electronAPI.onBackendRestartFailed((data: any) => {
+          console.error('🔔 백엔드 재시작 실패:', data);
+          addSearchLog(`❌ ${data.message}`);
+          setBackendConnected(false);
+        });
+      }
+      
+      // 인덱싱 재개 이벤트
+      if (electronAPI.onIndexingResumed) {
+        electronAPI.onIndexingResumed((data: any) => {
+          console.log('🔔 인덱싱 재개 알림:', data);
+          addSearchLog(`✅ ${data.message}`);
+        });
+      }
+      
+      // 클린업
+      return () => {
+        if (electronAPI.removeListener) {
+          electronAPI.removeListener('backend-restarted');
+          electronAPI.removeListener('backend-restart-failed');
+          electronAPI.removeListener('indexing-resumed');
+        }
+      };
+    }
+  }, []);
+
   // 📡 실시간 파일 변경 감지 (SSE)
   useEffect(() => {
     console.log('📡 SSE 연결 시작...');

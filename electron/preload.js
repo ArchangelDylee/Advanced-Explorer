@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteFiles: (filePaths) => ipcRenderer.invoke('delete-files', filePaths),
   copyFiles: (filePaths, destPath) => ipcRenderer.invoke('copy-files', filePaths, destPath),
   renameFile: (oldPath, newName) => ipcRenderer.invoke('rename-file', oldPath, newName),
+  // 이벤트 리스너 (메인 프로세스 → 렌더러)
+  onBackendRestarted: (callback) => ipcRenderer.on('backend-restarted', (event, data) => callback(data)),
+  onBackendRestartFailed: (callback) => ipcRenderer.on('backend-restart-failed', (event, data) => callback(data)),
+  onIndexingResumed: (callback) => ipcRenderer.on('indexing-resumed', (event, data) => callback(data)),
+  // 이벤트 리스너 제거
+  removeListener: (channel) => ipcRenderer.removeAllListeners(channel),
   platform: process.platform,
   isElectron: true
 });
