@@ -694,19 +694,18 @@ app.on('window-all-closed', () => {
 
 // Python 프로세스 종료 함수 (재사용 가능)
 async function terminatePythonProcess() {
-  if (!pythonProcess) {
-    return true; // 이미 종료됨
-  }
-
-  console.log('Python 백엔드 안전 종료 시작...');
+  console.log('========================================');
+  console.log('🛑 Python 백엔드 종료 시작...');
+  console.log('========================================');
   
   try {
     // 1. 백엔드 shutdown API 호출 (쓰레드 안전 종료)
+    console.log('1️⃣ 백엔드 shutdown API 호출 중...');
     const http = require('http');
     
     await new Promise((resolve, reject) => {
       const shutdownTimeout = setTimeout(() => {
-        console.warn('백엔드 종료 API 타임아웃 (5초)');
+        console.warn('⚠️ 백엔드 종료 API 타임아웃 (5초)');
         reject(new Error('Shutdown API timeout'));
       }, 5000); // 5초 타임아웃
       
@@ -721,13 +720,13 @@ async function terminatePythonProcess() {
       };
       
       const req = http.request(options, (res) => {
-        console.log(`백엔드 shutdown API 응답: ${res.statusCode}`);
+        console.log(`✓ 백엔드 shutdown API 응답: ${res.statusCode}`);
         clearTimeout(shutdownTimeout);
         resolve();
       });
       
       req.on('error', (error) => {
-        console.error('백엔드 shutdown API 호출 오류:', error.message);
+        console.error('❌ 백엔드 shutdown API 호출 오류:', error.message);
         clearTimeout(shutdownTimeout);
         reject(error);
       });
@@ -738,28 +737,45 @@ async function terminatePythonProcess() {
     console.log('✓ 백엔드 안전 종료 완료');
     
   } catch (error) {
-    console.warn('백엔드 안전 종료 실패, 강제 종료 시도:', error.message);
+    console.warn('⚠️ 백엔드 안전 종료 실패, 강제 종료 시도:', error.message);
   }
   
-  // 2. Python 프로세스 강제 종료 (안전 종료 실패 시 대비)
-  if (pythonProcess && !pythonProcess.killed) {
-    console.log('Python 프로세스 강제 종료...');
-    pythonProcess.kill('SIGTERM'); // 정상 종료 시그널
+  // 2. Python 프로세스 강제 종료
+  console.log('2️⃣ Python 프로세스 강제 종료 중...');
+  
+  if (isDev) {
+    // 개발 모드: 모든 python.exe 프로세스 종료
+    console.log('⚠️ 개발 모드: 모든 Python 프로세스 종료');
+    try {
+      const { execSync } = require('child_process');
+      execSync('taskkill /F /IM python.exe 2>nul', { stdio: 'ignore' });
+      console.log('✓ Python 프로세스 종료 완료');
+    } catch (e) {
+      console.warn('⚠️ Python 프로세스 종료 중 오류:', e.message);
+    }
+  } else {
+    // 프로덕션 모드: pythonProcess 객체로 종료
+    if (pythonProcess && !pythonProcess.killed) {
+      console.log('🔧 프로덕션 모드: Python 프로세스 종료');
+      pythonProcess.kill('SIGTERM'); // 정상 종료 시그널
+      
+      // 1초 후에도 종료되지 않으면 SIGKILL
+      await new Promise(resolve => {
+        setTimeout(() => {
+          if (pythonProcess && !pythonProcess.killed) {
+            console.warn('⚠️ Python 프로세스 SIGKILL로 강제 종료');
+            pythonProcess.kill('SIGKILL');
+          }
+          resolve();
+        }, 1000);
+      });
+    }
     
-    // 1초 후에도 종료되지 않으면 SIGKILL
-    await new Promise(resolve => {
-      setTimeout(() => {
-        if (pythonProcess && !pythonProcess.killed) {
-          console.warn('Python 프로세스 SIGKILL로 강제 종료');
-          pythonProcess.kill('SIGKILL');
-        }
-        resolve();
-      }, 1000);
-    });
+    pythonProcess = null;
   }
   
-  pythonProcess = null;
-  console.log('✓ Python 프로세스 종료 완료');
+  console.log('✅ Python 프로세스 종료 완료');
+  console.log('========================================');
   return true;
 }
 
@@ -771,42 +787,45 @@ app.on('before-quit', async (event) => {
     return; // 이미 종료 진행 중
   }
   
+  console.log('========================================');
+  console.log('🔚 Electron 앱 종료 시작...');
+  console.log('========================================');
+  
+  // 앱 종료를 일시 중단하고 백엔드를 안전하게 종료
+  event.preventDefault();
+  isQuitting = true;
+  
   // Python 활동 모니터링 중지
   stopPythonActivityMonitor();
   
-  if (pythonProcess) {
-    // 앱 종료를 일시 중단하고 백엔드를 안전하게 종료
-    event.preventDefault();
-    isQuitting = true;
-    
-    try {
-      await terminatePythonProcess();
-    } catch (error) {
-      console.error('Python 프로세스 종료 오류:', error);
-    }
-    
-    // 앱 종료 재개
-    setTimeout(() => {
-      console.log('앱 종료');
-      app.quit();
-    }, 1500); // 1.5초 대기 후 앱 종료
+  try {
+    await terminatePythonProcess();
+  } catch (error) {
+    console.error('❌ Python 프로세스 종료 오류:', error);
   }
+  
+  // 앱 종료 재개
+  setTimeout(() => {
+    console.log('✅ 앱 종료 완료');
+    app.quit();
+  }, 1500); // 1.5초 대기 후 앱 종료
 });
 
 // will-quit 이벤트 추가 (추가 안전장치)
 app.on('will-quit', async (event) => {
-  if (pythonProcess && !isQuitting) {
-    console.log('will-quit: 백그라운드 프로세스 확인...');
+  if (!isQuitting) {
+    console.log('⚠️ will-quit: 백그라운드 프로세스 확인...');
     event.preventDefault();
     isQuitting = true;
     
     try {
       await terminatePythonProcess();
     } catch (error) {
-      console.error('will-quit: Python 프로세스 종료 오류:', error);
+      console.error('❌ will-quit: Python 프로세스 종료 오류:', error);
     }
     
     setTimeout(() => {
+      console.log('✅ will-quit: 앱 종료');
       app.quit();
     }, 1000);
   }
