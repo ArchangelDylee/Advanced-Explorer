@@ -5,7 +5,7 @@ import {
   ChevronRight, ChevronDown, Image as ImageIcon,
   ArrowUp, ArrowDown, Clock, X, Plus,
   FileSpreadsheet, FileCode, FileArchive, LayoutTemplate,
-  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity, RefreshCw
+  FileBox, Star, LucideIcon, ArrowLeft, ArrowRight, FolderPlus, Edit2, AlertTriangle, List, Activity, RefreshCw, Settings
 } from 'lucide-react';
 import * as BackendAPI from './api/backend';
 
@@ -20,8 +20,6 @@ interface FileItem {
   indexed?: boolean; // 인덱싱 여부
   skipped?: boolean; // Skip 여부
   skipReason?: string; // Skip 사유
-  matchType?: 'filename' | 'content' | 'both'; // 검색 매칭 타입
-  deleted?: boolean; // 삭제된 파일 여부
 }
 
 interface FolderNode {
@@ -57,7 +55,6 @@ interface TabItem {
   selectedFolder: string; // Current Folder Name
   currentPath: string;    // Current Full Path
   selectedFile: FileItem | null;
-  selectedFiles: string[];  // 다중 선택된 파일 경로들 (Array로 JSON 직렬화 가능)
   files: FileItem[];      // Content of current folder
   sortConfig: SortConfig;
   // Navigation History
@@ -81,6 +78,7 @@ interface ColWidthsState {
 
 interface SearchOptionsState {
   content: boolean;
+  subfolder: boolean;
 }
 
 interface TypeFiltersState {
@@ -315,20 +313,28 @@ export default function App() {
   const [layout, setLayout] = useLocalStorage<LayoutState>('layout', { sidebarWidth: 250, fileListWidth: 600, bottomPanelHeight: 200, favoritesHeight: 180, searchLogWidth: 600 });
   const [colWidths, setColWidths] = useLocalStorage<ColWidthsState>('colWidths', { name: 350, size: 100, date: 150 });
   const [searchHistory, setSearchHistory] = useLocalStorage<string[]>('searchHistory', ['기획서', '2023년 정산']);
-  const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true });
+  const [searchOptions, setSearchOptions] = useLocalStorage<SearchOptionsState>('searchOptions', { content: true, subfolder: true });
   const [typeFilters, setTypeFilters] = useLocalStorage<TypeFiltersState>('typeFilters', { ppt: true, doc: true, hwp: true, txt: true, pdf: true, csv: true, etc: true });
   const [folderStructure, setFolderStructure] = useLocalStorage<FolderNode[]>('folderStructure', MOCK_FOLDERS_INITIAL);
 
   // 마지막 Focusing된 폴더 정보 저장
   const [lastFocusedFolder, setLastFocusedFolder] = useLocalStorage<{ name: string; path: string } | null>('lastFocusedFolder', null);
-  // 초기 폴더 선택 완료 여부
-  const [initialFolderSelected, setInitialFolderSelected] = useState(false);
 
-  // 초기 탭 기본값 (실제 폴더는 useEffect에서 선택됨)
-  const initialFolder = {
-    name: '내 PC',
-    path: 'My Computer'
+  // 초기 탭 생성 시 마지막 Focusing된 폴더 또는 문서 폴더 사용
+  const getInitialFolder = () => {
+    if (lastFocusedFolder && lastFocusedFolder.path && lastFocusedFolder.name) {
+      return {
+        name: lastFocusedFolder.name,
+        path: lastFocusedFolder.path
+      };
+    }
+    return {
+      name: '문서',
+      path: `${userHome}\\Documents`
+    };
   };
+
+  const initialFolder = getInitialFolder();
 
   // Tabs (Multi-instance)
   const [tabs, setTabs] = useLocalStorage<TabItem[]>('tabs', [{ 
@@ -338,7 +344,6 @@ export default function App() {
     selectedFolder: initialFolder.name, 
     currentPath: initialFolder.path, 
     selectedFile: null, 
-    selectedFiles: [], 
     files: [], 
     sortConfig: { key: null, direction: 'asc' }, 
     history: [{ name: initialFolder.name, path: initialFolder.path }], 
@@ -349,10 +354,7 @@ export default function App() {
 
   // --- Transient State ---
   const [clipboard, setClipboard] = useState<FileItem | null>(null);
-  const [clipboardFiles, setClipboardFiles] = useState<string[]>([]); // 다중 파일 클립보드
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>({ isOpen: false, item: null });
-  const [renamingFile, setRenamingFile] = useState<{ path: string; oldName: string } | null>(null);
-  const [newFileName, setNewFileName] = useState('');
   const [showIndexingLog, setShowIndexingLog] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [searchLog, setSearchLog] = useState<string[]>(['검색 진행 상태를 보여 줍니다']);
@@ -361,8 +363,6 @@ export default function App() {
   const [dbTotalCount, setDbTotalCount] = useState<number>(0);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
-  const [backendConnected, setBackendConnected] = useState<boolean>(true);
-  const [isCheckingBackend, setIsCheckingBackend] = useState<boolean>(false);
   const [fileSummary, setFileSummary] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -378,20 +378,7 @@ export default function App() {
   const logsAbortControllerRef = React.useRef<AbortController | null>(null);
   const statsAbortControllerRef = React.useRef<AbortController | null>(null);
   
-  // activeTab 안전성 보장
-  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0] || {
-    id: 1,
-    title: 'Quick Access',
-    searchText: '',
-    selectedFolder: 'Quick Access',
-    currentPath: '',
-    selectedFile: null,
-    selectedFiles: [],
-    files: [],
-    sortConfig: { key: null, direction: 'asc' as const },
-    history: [],
-    historyIndex: 0
-  };
+  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
 
   // Initialize DB statistics
   useEffect(() => {
@@ -452,172 +439,6 @@ export default function App() {
       if (syncInterval) clearInterval(syncInterval);
     };
   }, [isIndexing]); // isIndexing 상태가 변경될 때마다 재설정
-
-  // 🔍 백엔드 연결 상태 모니터링 (Sleep 모드 복귀 대응)
-  useEffect(() => {
-    let checkInterval: NodeJS.Timeout | null = null;
-    
-    const checkBackendHealth = async () => {
-      if (isCheckingBackend) return;
-      
-      try {
-        setIsCheckingBackend(true);
-        const response = await fetch('http://127.0.0.1:5000/api/health', {
-          method: 'GET',
-          signal: AbortSignal.timeout(3000)
-        });
-        
-        if (response.ok) {
-          if (!backendConnected) {
-            console.log('✅ 백엔드 연결 복구됨');
-            setBackendConnected(true);
-            addSearchLog('✅ 백엔드 서버 연결 복구');
-          }
-        } else {
-          throw new Error('Backend unhealthy');
-        }
-      } catch (error) {
-        console.error('❌ 백엔드 연결 실패:', error);
-        
-        if (backendConnected) {
-          setBackendConnected(false);
-          addSearchLog('⚠️ 백엔드 서버 연결 끊김 - 재시작 시도 중...');
-          
-          // Electron API로 백엔드 재시작 요청
-          if (typeof window !== 'undefined' && (window as any).electronAPI) {
-            try {
-              const result = await (window as any).electronAPI.restartBackend();
-              if (result.success) {
-                addSearchLog('✅ 백엔드 서버 재시작 완료');
-                setBackendConnected(true);
-              } else {
-                addSearchLog('❌ 백엔드 서버 재시작 실패 - 수동으로 재시작 필요');
-              }
-            } catch (e) {
-              addSearchLog('❌ 백엔드 재시작 요청 실패');
-            }
-          }
-        }
-      } finally {
-        setIsCheckingBackend(false);
-      }
-    };
-    
-    // 페이지 가시성 변경 감지 (Sleep 복귀 감지)
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        console.log('👁️ 페이지 활성화 - 백엔드 상태 확인');
-        checkBackendHealth();
-      }
-    };
-    
-    // 초기 체크
-    checkBackendHealth();
-    
-    // 30초마다 주기적으로 체크
-    checkInterval = setInterval(checkBackendHealth, 30000);
-    
-    // 가시성 변경 이벤트 리스너
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    return () => {
-      if (checkInterval) clearInterval(checkInterval);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [backendConnected, isCheckingBackend]);
-
-  // 📡 Electron 이벤트 리스너 (화면 잠금 해제, Sleep 복귀 등)
-  useEffect(() => {
-    if (typeof window !== 'undefined' && (window as any).electronAPI) {
-      const electronAPI = (window as any).electronAPI;
-      
-      // 백엔드 재시작 성공 이벤트
-      if (electronAPI.onBackendRestarted) {
-        electronAPI.onBackendRestarted((data: any) => {
-          console.log('🔔 백엔드 재시작 알림:', data);
-          addSearchLog(`✅ ${data.message}`);
-          setBackendConnected(true);
-        });
-      }
-      
-      // 백엔드 재시작 실패 이벤트
-      if (electronAPI.onBackendRestartFailed) {
-        electronAPI.onBackendRestartFailed((data: any) => {
-          console.error('🔔 백엔드 재시작 실패:', data);
-          addSearchLog(`❌ ${data.message}`);
-          setBackendConnected(false);
-        });
-      }
-      
-      // 인덱싱 재개 이벤트
-      if (electronAPI.onIndexingResumed) {
-        electronAPI.onIndexingResumed((data: any) => {
-          console.log('🔔 인덱싱 재개 알림:', data);
-          addSearchLog(`✅ ${data.message}`);
-        });
-      }
-      
-      // 클린업
-      return () => {
-        if (electronAPI.removeListener) {
-          electronAPI.removeListener('backend-restarted');
-          electronAPI.removeListener('backend-restart-failed');
-          electronAPI.removeListener('indexing-resumed');
-        }
-      };
-    }
-  }, []);
-
-  // 📡 실시간 파일 변경 감지 (SSE)
-  useEffect(() => {
-    console.log('📡 SSE 연결 시작...');
-    const eventSource = new EventSource('http://127.0.0.1:5000/api/file-changes/stream');
-    
-    eventSource.onopen = () => {
-      console.log('✅ SSE 연결 성공');
-    };
-    
-    eventSource.onmessage = (event) => {
-      try {
-        const change = JSON.parse(event.data);
-        console.log('📥 파일 변경 이벤트:', change);
-        
-        const currentPath = activeTab?.currentPath || '';
-        const changeDir = change.path ? change.path.substring(0, change.path.lastIndexOf('\\')) : '';
-        
-        // 현재 폴더에 영향을 주는 변경사항만 처리
-        if (currentPath && changeDir.toLowerCase() === currentPath.toLowerCase()) {
-          console.log('🔄 현재 폴더 영향 → 파일 리스트 새로고침');
-          
-          if (change.type === 'deleted') {
-            // 파일 삭제: UI에서 즉시 제거
-            setTabs(prevTabs => prevTabs.map((tab) => 
-              tab.id === activeTabId ? {
-                ...tab,
-                files: tab.files.filter(f => f.path && f.path.toLowerCase() !== change.path.toLowerCase())
-              } : tab
-            ));
-          } else if (change.type === 'created' || change.type === 'modified' || change.type === 'moved') {
-            // 생성/수정/이동: 파일 리스트 다시 읽기 (navigate 직접 호출하지 않음)
-            console.log('📝 파일 변경 감지:', change.type, change.path);
-            // Note: 실시간 업데이트는 수동 새로고침으로 대체 (무한 루프 방지)
-          }
-        }
-      } catch (err) {
-        console.error('❌ SSE 파싱 오류:', err);
-      }
-    };
-    
-    eventSource.onerror = (err) => {
-      console.error('❌ SSE 연결 오류:', err);
-      eventSource.close();
-    };
-    
-    return () => {
-      console.log('📡 SSE 연결 종료');
-      eventSource.close();
-    };
-  }, [activeTabId]); // navigate 제거 - 무한 루프 방지
 
   // Auto-refresh indexing DB view every 1 minute
   useEffect(() => {
@@ -783,78 +604,6 @@ export default function App() {
     initializeDrives();
   }, []);
 
-  // --- useEffect: Normalize tabs (add missing selectedFiles) ---
-  useEffect(() => {
-    const needsNormalization = tabs.some(tab => !tab.selectedFiles);
-    if (needsNormalization) {
-      setTabs(tabs.map(tab => ({
-        ...tab,
-        selectedFiles: tab.selectedFiles || []
-      })));
-    }
-  }, []);
-
-  // 프로그램 시작 시 초기 폴더 자동 선택 (항상 문서 → Root 순서)
-  useEffect(() => {
-    const selectInitialFolder = async () => {
-      if (initialFolderSelected || !folderStructure || folderStructure.length === 0) {
-        return;
-      }
-
-      // 폴더 트리에 드라이브가 로드되었는지 확인
-      const myPC = folderStructure.find(node => node.name === '내 PC');
-      if (!myPC || !myPC.children || myPC.children.length === 0) {
-        console.log('⏳ 드라이브 로딩 대기 중...');
-        return;
-      }
-
-      if (typeof window !== 'undefined' && (window as any).electronAPI) {
-        const electronAPI = (window as any).electronAPI;
-        
-        try {
-          console.log('🎯 초기 폴더 선택 시작... (항상 문서 → Root)');
-          
-          // 1. 문서 폴더 확인 (즐겨찾기의 문서)
-          const documentsPath = `${userHome}\\Documents`;
-          console.log('📂 문서 폴더 확인 중:', documentsPath);
-          try {
-            const stats = await electronAPI.getFileStats(documentsPath);
-            if (stats && stats.isDirectory) {
-              console.log('✅ 문서 폴더 존재 - 자동 선택');
-              setInitialFolderSelected(true);
-              // 약간의 지연 후 navigate 호출
-              setTimeout(() => {
-                navigate('문서', documentsPath);
-              }, 100);
-              return;
-            }
-          } catch (error) {
-            console.log('⚠️ 문서 폴더 없음 - Root 드라이브로 대체');
-          }
-
-          // 2. 첫 번째 드라이브 루트 사용 (폴더 트리의 Root)
-          const firstDrive = myPC.children[0];
-          console.log('✅ Root 드라이브 선택:', firstDrive.name);
-          setInitialFolderSelected(true);
-          // 약간의 지연 후 navigate 호출
-          setTimeout(() => {
-            navigate(firstDrive.name, firstDrive.path || '');
-          }, 100);
-
-        } catch (error) {
-          console.error('❌ 초기 폴더 선택 오류:', error);
-        }
-      }
-    };
-
-    // 드라이브가 로드된 후 실행 (충분한 지연)
-    const timer = setTimeout(() => {
-      selectInitialFolder();
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [folderStructure, initialFolderSelected]);
-
   // Initialize content for active tab on mount (single unified effect)
   const initialLoadDone = React.useRef(false);
   useEffect(() => {
@@ -918,68 +667,20 @@ export default function App() {
               
               // OCR된 텍스트 로드 (인덱싱되어 있으면)
               try {
-                const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
+                const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
                 if (detail && detail.content) {
                   console.log('✅ OCR 텍스트 로드 성공');
-                  // 삭제된 파일 경고 표시
-                  if (detail.deleted) {
-                    setFileContent(`⚠️ 이 파일은 삭제되었습니다 (DB에만 남아있음)\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nOCR 텍스트:\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${detail.content}`);
-                  } else {
-                    setFileContent(detail.content);
-                  }
+                  setFileContent(detail.content);
                 } else {
                   console.log('ℹ️ OCR 텍스트 없음');
                   if (!fileContent?.includes('⚠️')) {
                     setFileContent('ℹ️ OCR 텍스트가 없습니다.\n\n이미지를 인덱싱하면 텍스트를 추출할 수 있습니다.');
                   }
                 }
-              } catch (error: any) {
-                const errorMsg = error?.message || String(error);
-                console.log('⚠️ OCR 텍스트 조회 오류:', errorMsg);
-                
-                // 네트워크 에러나 타임아웃인 경우에만 백엔드 상태 점검
-                if (errorMsg.includes('fetch') || errorMsg.includes('timeout') || errorMsg.includes('network')) {
-                  console.log('🔍 네트워크 오류 감지. 백엔드 상태 점검 중...');
-                  
-                  if (typeof window !== 'undefined' && (window as any).electronAPI?.checkBackendHealth) {
-                    try {
-                      const healthCheck = await (window as any).electronAPI.checkBackendHealth();
-                      
-                      if (!healthCheck.healthy) {
-                        console.warn('⚠️ 백엔드가 응답하지 않습니다. 재시작 시도...');
-                        const restartResult = await (window as any).electronAPI.restartBackend();
-                        
-                        if (restartResult.success) {
-                          console.log('✅ 백엔드 재시작 완료');
-                          setFileContent('✅ 백엔드가 재시작되었습니다.\n\n이미지를 다시 선택하면 OCR 텍스트를 조회할 수 있습니다.');
-                        } else {
-                          console.error('❌ 백엔드 재시작 실패');
-                          if (!fileContent?.includes('⚠️')) {
-                            setFileContent('⚠️ 백엔드 재시작 실패.\n\n프로그램을 재시작해주세요.');
-                          }
-                        }
-                      } else {
-                        // 백엔드는 정상이지만 OCR 텍스트가 없는 경우
-                        if (!fileContent?.includes('⚠️')) {
-                          setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
-                        }
-                      }
-                    } catch (healthError) {
-                      console.error('❌ Health Check 오류:', healthError);
-                      if (!fileContent?.includes('⚠️')) {
-                        setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
-                      }
-                    }
-                  } else {
-                    if (!fileContent?.includes('⚠️')) {
-                      setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
-                    }
-                  }
-                } else {
-                  // 404 등 다른 에러는 인덱싱되지 않은 것으로 간주
-                  if (!fileContent?.includes('⚠️')) {
-                    setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
-                  }
+              } catch (error) {
+                console.log('ℹ️ OCR 텍스트 조회 불가:', error);
+                if (!fileContent?.includes('⚠️')) {
+                  setFileContent('ℹ️ 이미지를 인덱싱하면 OCR로 텍스트를 추출할 수 있습니다.');
                 }
               }
             } catch (error) {
@@ -996,103 +697,24 @@ export default function App() {
           // 문서 파일 - 인덱싱된 내용 조회
           setImagePreview(null);
           console.log('📄 문서 파일 선택:', activeTab.selectedFile.path);
-          console.log('📄 경로 타입:', typeof activeTab.selectedFile.path);
-          console.log('📄 경로 길이:', activeTab.selectedFile.path?.length);
-          console.log('📄 경로 인코딩 테스트:', encodeURIComponent(activeTab.selectedFile.path || ''));
           
           try {
-            const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
+            const detail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
             console.log('📦 API 응답:', detail);
-
+            
             if (detail && detail.content) {
-              // 삭제된 파일 경고 표시
-              if (detail.deleted) {
-                setFileContent(`⚠️ 이 파일은 삭제되었습니다 (DB에만 남아있음)\n\n파일 경로: ${activeTab.selectedFile.path}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n인덱싱된 내용:\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${detail.content}`);
-              } else {
-                setFileContent(detail.content);
-              }
+              setFileContent(detail.content);
             } else {
               setFileContent('⚠️ 인덱싱된 내용이 없습니다.\n\n파일이 아직 인덱싱되지 않았거나\nDB에 저장되지 않았을 수 있습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
             }
           } catch (error: any) {
-            console.error('❌ 파일 내용 조회 오류:', error);
+            console.error('파일 내용 조회 오류:', error);
             const errorMsg = error?.message || String(error);
             
-            // 백엔드 프로세스 상태 점검 및 자동 복구 시도
-            if (typeof window !== 'undefined' && (window as any).electronAPI?.checkBackendHealth) {
-              console.log('🔍 백엔드 상태 점검 중...');
-              setFileContent('🔍 백엔드 프로세스 점검 중...\n\n잠시만 기다려주세요.');
-              addSearchLog('🔍 백엔드 프로세스 점검 중...');
-              setBackendConnected(false);
-              
-              try {
-                const healthCheck = await (window as any).electronAPI.checkBackendHealth();
-                console.log('🏥 Health Check 결과:', healthCheck);
-                
-                if (!healthCheck.healthy) {
-                  console.warn('⚠️ 백엔드가 응답하지 않습니다. 재시작 시도...');
-                  setFileContent('⚠️ 백엔드 프로세스가 응답하지 않습니다.\n\n🔄 자동 재시작 중...');
-                  addSearchLog('⚠️ 백엔드 응답 없음 - 재시작 시도');
-                  
-                  const restartResult = await (window as any).electronAPI.restartBackend();
-                  console.log('🔄 재시작 결과:', restartResult);
-                  
-                  if (restartResult.success) {
-                    console.log('✅ 백엔드 재시작 완료. 재조회 시도...');
-                    setFileContent('✅ 백엔드 재시작 완료.\n\n🔄 파일 내용 다시 조회 중...');
-                    addSearchLog('✅ 백엔드 재시작 완료');
-                    setBackendConnected(true);
-                    
-                    // 백엔드가 완전히 시작될 때까지 대기
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    
-                    // 다시 조회 시도
-                    try {
-                      const detail = await BackendAPI.getIndexedContent(activeTab.selectedFile.path!);
-                      if (detail && detail.content) {
-                        // 삭제된 파일 경고 표시
-                        if (detail.deleted) {
-                          setFileContent(`⚠️ 이 파일은 삭제되었습니다 (DB에만 남아있음)\n\n파일 경로: ${activeTab.selectedFile.path}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n인덱싱된 내용:\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n${detail.content}`);
-                        } else {
-                          setFileContent(detail.content);
-                        }
-                        console.log('✅ 재조회 성공!');
-                        addSearchLog('✅ 파일 내용 조회 성공');
-                      } else {
-                        setFileContent('⚠️ 이 파일은 아직 인덱싱되지 않았습니다\n\n이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.\n\n💡 원측 상단의 "색인" 탭에서 이 파일이 있는 폴더를\n선택하고 "색인 시작" 버튼을 클릭하세요.');
-                      }
-                    } catch (retryError) {
-                      console.error('❌ 재조회 실패:', retryError);
-                      setFileContent('⚠️ 이 파일은 아직 인덱싱되지 않았습니다\n\n이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.\n\n💡 원측 상단의 "색인" 탭에서 이 파일이 있는 폴더를\n선택하고 "색인 시작" 버튼을 클릭하세요.');
-                      addSearchLog('⚠️ 파일이 인덱싱되지 않음');
-                    }
-                  } else {
-                    console.error('❌ 백엔드 재시작 실패');
-                    setFileContent('❌ 백엔드 재시작에 실패했습니다.\n\n수동으로 프로그램을 재시작해주세요.');
-                    addSearchLog('❌ 백엔드 재시작 실패');
-                  }
-                } else {
-                  // 백엔드는 정상이지만 파일을 찾을 수 없는 경우
-                  setBackendConnected(true);
-                  if (errorMsg.includes('404')) {
-                    setFileContent('⚠️ 이 파일은 아직 인덱싱되지 않았습니다\n\n이 파일의 내용을 보려면 먼저 인덱싱을 시작해야 합니다.\n\n💡 원측 상단의 "색인" 탭에서 이 파일이 있는 폴더를\n선택하고 "색인 시작" 버튼을 클릭하세요.');
-                    addSearchLog('ℹ️ 파일이 DB에 없음 - 인덱싱 필요');
-                  } else {
-                    setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
-                  }
-                }
-              } catch (healthError) {
-                console.error('❌ Health Check 오류:', healthError);
-                setFileContent(`❌ 백엔드 상태 점검 실패.\n\n오류: ${errorMsg}\n\n수동으로 프로그램을 재시작해주세요.`);
-                addSearchLog('❌ 백엔드 상태 점검 실패');
-              }
+            if (errorMsg.includes('404')) {
+              setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
             } else {
-              // Electron API 사용 불가 (웹 환경)
-              if (errorMsg.includes('404')) {
-                setFileContent('❌ 파일을 DB에서 찾을 수 없습니다.\n\n• DB가 초기화되었거나\n• 파일이 아직 인덱싱되지 않았습니다.\n\n인덱싱을 시작하거나 재시작해주세요.');
-              } else {
-                setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
-              }
+              setFileContent(`❌ 파일 내용을 불러올 수 없습니다.\n\n오류: ${errorMsg}\n\n인덱싱이 완료되지 않았거나\n오류가 발생했습니다.`);
             }
           }
         } else {
@@ -1112,6 +734,14 @@ export default function App() {
   // --- Helpers ---
   const updateActiveTab = (updates: Partial<TabItem>) => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...updates } : t));
+    
+    // currentPath가 변경되면 lastFocusedFolder 업데이트
+    if (updates.currentPath && updates.selectedFolder) {
+      setLastFocusedFolder({
+        name: updates.selectedFolder,
+        path: updates.currentPath
+      });
+    }
   };
 
   const addSearchLog = (msg: string) => {
@@ -1138,11 +768,11 @@ export default function App() {
   // 인덱싱 로그에서 파일 클릭 시 인덱스 내용 표시
   const handleIndexLogClick = async (filePath: string) => {
     console.log('🔍 인덱스 파일 클릭:', filePath);
-
+    
     try {
-      const detail = await BackendAPI.getIndexedContent(filePath);
+      const detail = await BackendAPI.getIndexedFileDetail(filePath);
       console.log('📦 API 응답:', detail);
-
+      
       if (detail && detail.content) {
         setFileContent(detail.content);
         setFileSummary(null); // 요약 초기화
@@ -1165,56 +795,6 @@ export default function App() {
     }
   };
 
-  // 검색어 하이라이트 함수
-  const highlightSearchTerms = (text: string, searchQuery: string): React.ReactNode => {
-    if (!searchQuery || !searchQuery.trim() || !text) {
-      return text;
-    }
-
-    try {
-      // 쌍따옴표 검색 ("정확한 구문")
-      if (searchQuery.startsWith('"') && searchQuery.endsWith('"')) {
-        const exactTerm = searchQuery.slice(1, -1);
-        if (!exactTerm) return text;
-
-        const regex = new RegExp(`(${exactTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-        const parts = text.split(regex);
-
-        return parts.map((part, i) =>
-          regex.test(part) ? (
-            <mark key={i} style={{ backgroundColor: '#ffff00', color: '#000', fontWeight: 'bold' }}>
-              {part}
-            </mark>
-          ) : (
-            part
-          )
-        );
-      }
-
-      // 여러 단어 OR 검색
-      const terms = searchQuery.split(/\s+/).filter(t => t.length > 0);
-      if (terms.length === 0) return text;
-
-      // 모든 검색어를 OR로 연결한 정규식
-      const escapedTerms = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-      const regex = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
-      const parts = text.split(regex);
-
-      return parts.map((part, i) =>
-        regex.test(part) ? (
-          <mark key={i} style={{ backgroundColor: '#ffff00', color: '#000', fontWeight: 'bold' }}>
-            {part}
-          </mark>
-        ) : (
-          part
-        )
-      );
-    } catch (error) {
-      console.error('하이라이트 오류:', error);
-      return text;
-    }
-  };
-
   // 파일 내용 요약 (로컬 TextRank)
   const handleSummarize = async () => {
     if (!activeTab.selectedFile?.path) {
@@ -1224,25 +804,24 @@ export default function App() {
 
     try {
       setIsSummarizing(true);
-      addSearchLog(`🔄 내용 요약 생성 중 (TextRank): ${activeTab.selectedFile.name}`);
+      addSearchLog(`🔄 로컬 요약 생성 중 (TextRank): ${activeTab.selectedFile.name}`);
 
       const result = await BackendAPI.summarizeFile(activeTab.selectedFile.path, 5);
 
       if (result.success && result.summary) {
         setFileSummary(result.summary);
-        addSearchLog(`✓ 내용 요약 완료: ${result.original_length}자 → ${result.summary_length}자 (${result.compression_ratio})`);
+        addSearchLog(`✓ 로컬 요약 완료: ${result.original_length}자 → ${result.summary_length}자 (${result.compression_ratio})`);
       } else {
         setFileSummary(null);
-        addSearchLog(`❌ 내용 요약 실패: ${result.error || '알 수 없는 오류'}`);
+        addSearchLog(`❌ 로컬 요약 실패: ${result.error || '알 수 없는 오류'}`);
       }
     } catch (error) {
-      console.error('내용 요약 오류:', error);
-      addSearchLog(`❌ 내용 요약 오류: ${error}`);
+      console.error('로컬 요약 오류:', error);
+      addSearchLog(`❌ 로컬 요약 오류: ${error}`);
     } finally {
       setIsSummarizing(false);
     }
   };
-
 
   // 텍스트 컨텍스트 메뉴 핸들러
   const handleTextContextMenu = (e: React.MouseEvent) => {
@@ -1518,7 +1097,6 @@ export default function App() {
         title: folderName,
         files: rawContent,
         selectedFile: null,
-        selectedFiles: [],
         searchText: '',
         history: newHistory,
         historyIndex: newIndex
@@ -1559,7 +1137,6 @@ export default function App() {
           title: prev.name,
           files: rawContent,
           selectedFile: null,
-          selectedFiles: [],
           searchText: '',
           historyIndex: newIndex
         });
@@ -1600,7 +1177,6 @@ export default function App() {
           title: next.name,
           files: rawContent,
           selectedFile: null,
-          selectedFiles: [],
           searchText: '',
           historyIndex: newIndex
         });
@@ -1666,23 +1242,66 @@ export default function App() {
       return;
     }
 
+    // 백엔드 상태 확인 및 자동 시작
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.checkBackendHealth) {
+      try {
+        setIsIndexing(true);
+        setIndexingStatus('백엔드 프로세스 점검 중...');
+        addIndexingMessage('🔍 백엔드 프로세스 상태 확인 중...');
+        
+        const healthCheckResult = await (window as any).electronAPI.checkBackendHealth();
+        console.log('🏥 Health Check 결과:', healthCheckResult);
+        
+        if (!healthCheckResult.healthy) {
+          console.warn('⚠️ 백엔드가 응답하지 않습니다. 자동 시작 시도...');
+          setIndexingStatus('백엔드 프로세스 시작 중...');
+          addIndexingMessage('⚠️ 백엔드 프로세스가 응답하지 않습니다');
+          addIndexingMessage('🔄 백엔드 자동 시작 중... (약 10초 소요)');
+          setBackendConnected(false);
+          
+          const restartResult = await (window as any).electronAPI.restartBackend();
+          console.log('🔄 재시작 결과:', restartResult);
+          
+          if (restartResult.success) {
+            console.log('✅ 백엔드 시작 완료. 인덱싱 준비 중...');
+            setIndexingStatus('백엔드 시작 완료. 준비 중...');
+            addIndexingMessage('✅ 백엔드 프로세스 시작 완료');
+            addIndexingMessage('⏳ 백엔드 초기화 대기 중... (8초)');
+            setBackendConnected(true);
+            
+            // 백엔드가 완전히 시작될 때까지 대기
+            await new Promise(resolve => setTimeout(resolve, 8000));
+            
+            addIndexingMessage('✅ 백엔드 준비 완료. 인덱싱 시작...');
+          } else {
+            console.error('❌ 백엔드 시작 실패');
+            setIndexingStatus('대기 중...');
+            addIndexingMessage('❌ 백엔드 시작 실패. 수동으로 앱을 재시작해주세요.');
+            setIsIndexing(false);
+            return;
+          }
+        } else {
+          console.log('✅ 백엔드 정상 작동 중');
+          addIndexingMessage('✅ 백엔드 프로세스 정상 작동 중');
+          setBackendConnected(true);
+        }
+      } catch (healthError) {
+        console.error('❌ Health Check 오류:', healthError);
+        addIndexingMessage('⚠️ 백엔드 상태 확인 실패. 인덱싱을 시도합니다...');
+      }
+    }
+
     try {
       setIsIndexing(true);
       setIndexingStatus('인덱싱 시작 중...');
-      addIndexingMessage(`인덱싱 시작: ${selectedDir}`);
-
+      addIndexingMessage(`📁 인덱싱 시작: ${selectedDir}`);
+      
       const response = await BackendAPI.startIndexing([selectedDir]);
-
-      if (response.status === 'started' || response.status === 'already_running') {
-        // 새로 시작하거나 이미 실행 중인 경우 모두 진행 상황 표시
-        if (response.status === 'already_running') {
-          setIndexingStatus('인덱싱 실행 중...');
-          addIndexingMessage('⚠️ 인덱싱이 이미 실행 중입니다. 진행 상황을 표시합니다.');
-        } else {
-          setIndexingStatus('인덱싱 진행 중...');
-          addIndexingMessage('인덱싱이 시작되었습니다');
-        }
-
+      
+      if (response.status === 'started') {
+        setIndexingStatus('인덱싱 진행 중...');
+        addIndexingMessage('인덱싱이 시작되었습니다');
+        
         // 주기적으로 상태 및 로그 확인 (Throttling + AbortController)
         const statusInterval = setInterval(async () => {
           try {
@@ -1705,7 +1324,7 @@ export default function App() {
               const stats = await BackendAPI.getStatistics();
               setDbTotalCount(stats.total_indexed_files);
             } catch (error) {
-              if (error instanceof Error && error.name !== 'AbortError') {
+              if (error.name !== 'AbortError') {
                 console.error('통계 조회 오류:', error);
               }
             }
@@ -1723,7 +1342,7 @@ export default function App() {
                   time: log.time,
                   path: log.path || log.filename,  // 전체 경로 사용
                   filename: log.filename,           // 파일명도 저장
-                  status: log.status as IndexLogEntry['status'],
+                  status: log.status,
                   size: log.detail
                 }));
                 
@@ -1741,7 +1360,7 @@ export default function App() {
                   const latestLogsMap = new Map<string, IndexLogEntry>();
                   mappedLogs.forEach(log => {
                     // 이미 존재하지 않을 때만 추가 (먼저 나온 것이 최신)
-                    if (log.path && !latestLogsMap.has(log.path)) {
+                    if (!latestLogsMap.has(log.path)) {
                       latestLogsMap.set(log.path, log);
                     }
                   });
@@ -1771,7 +1390,7 @@ export default function App() {
                 });
               }
             } catch (error) {
-              if (error instanceof Error && error.name !== 'AbortError') {
+              if (error.name !== 'AbortError') {
                 console.error('로그 조회 오류:', error);
               }
             }
@@ -1798,7 +1417,7 @@ export default function App() {
               setIndexingStatus(`인덱싱 중... (${status.stats.indexed_files}/${status.stats.total_files})`);
             }
           } catch (error) {
-            if (error instanceof Error && error.name !== 'AbortError') {
+            if (error.name !== 'AbortError') {
               console.error('인덱싱 상태 확인 오류:', error);
             }
           }
@@ -1809,9 +1428,19 @@ export default function App() {
       }
     } catch (error) {
       console.error('인덱싱 시작 오류:', error);
-      addIndexingMessage(`인덱싱 오류: ${error}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      
+      if (errorMsg.includes('fetch') || errorMsg.includes('Failed to fetch')) {
+        addIndexingMessage(`❌ 백엔드 연결 오류: 백엔드 프로세스가 응답하지 않습니다`);
+        addIndexingMessage('💡 해결방법: 앱을 재시작하거나 다시 시도해주세요');
+        setIndexingStatus('백엔드 연결 오류');
+      } else {
+        addIndexingMessage(`❌ 인덱싱 오류: ${errorMsg}`);
+        setIndexingStatus('오류 발생');
+      }
+      
       setIsIndexing(false);
-      setIndexingStatus('대기 중...');
+      setBackendConnected(false);
     }
   };
 
@@ -1888,41 +1517,13 @@ export default function App() {
   };
 
   const handleCopy = () => {
-    const selectedCount = (activeTab.selectedFiles || []).length;
-    const filesToCopy = selectedCount > 0 
-      ? activeTab.selectedFiles
-      : activeTab.selectedFile ? [activeTab.selectedFile.path!] : [];
-    
-    if (filesToCopy.length > 0) {
-      setClipboardFiles(filesToCopy);
-      addSearchLog(`클립보드 복사: ${filesToCopy.length}개 파일`);
+    if (activeTab.selectedFile) {
+      setClipboard(activeTab.selectedFile);
+      addSearchLog(`클립보드 복사: ${activeTab.selectedFile.name}`);
     }
   };
 
-  const handlePaste = async () => {
-    if (clipboardFiles.length === 0) return;
-    
-    try {
-      if (typeof window !== 'undefined' && (window as any).electronAPI) {
-        const result = await (window as any).electronAPI.copyFiles(clipboardFiles, activeTab.currentPath);
-        
-        if (result.success) {
-          const successCount = result.results.filter((r: any) => r.success).length;
-          addSearchLog(`✅ ${successCount}개 파일 붙여넣기 완료`);
-          
-          // 파일 리스트 새로고침
-          navigate(activeTab.selectedFolder, activeTab.currentPath);
-        } else {
-          addSearchLog(`❌ 붙여넣기 실패: ${result.error}`);
-        }
-      }
-    } catch (error) {
-      addSearchLog(`❌ 붙여넣기 오류: ${error}`);
-    }
-  };
-  
-  // 구버전 호환용 (나중에 제거 가능)
-  const handlePasteOld = () => {
+  const handlePaste = () => {
     if (!clipboard) return;
     let name = clipboard.name;
     let i = 2;
@@ -1936,8 +1537,8 @@ export default function App() {
         name = `${clipboard.name} - 복사본 (${i++})`;
       }
     }
-    const newFile = {
-      ...clipboard,
+    const newFile = { 
+      ...clipboard, 
       name, 
       date: new Date().toLocaleString('ko-KR', {
         year: 'numeric',
@@ -2057,18 +1658,9 @@ export default function App() {
     try {
       // 백엔드 검색 API 호출
       addSearchLog(`📡 백엔드 검색 엔진에 요청 중...`);
-      addSearchLog(`   - 파일명 검색: ✓ (항상 실행)`);
-      addSearchLog(`   - 내용 검색: ${searchOptions.content ? '✓ (활성화)' : '✗ (비활성화)'}`);
-      addSearchLog(`   - 검색 경로: ${activeTab.currentPath || '전체'} (하위 폴더 포함)`);
       
-      // 항상 현재 디렉토리 및 하위 폴더 포함 검색
-      const searchPath = activeTab.currentPath || null;
-      const response = await BackendAPI.searchCombined(
-        searchTerm, 
-        searchPath as any, 
-        100,
-        searchOptions.content  // 내용 검색 옵션 전달
-      );
+      const searchPath = searchOptions.subfolder && activeTab.currentPath ? activeTab.currentPath : null;
+      const response = await BackendAPI.searchCombined(searchTerm, searchPath as any, 100);
       
       addSearchLog(`✓ 검색 쿼리 파싱 완료`);
       addSearchLog(`📂 DB에서 파일 검색 중...`);
@@ -2133,50 +1725,24 @@ export default function App() {
         addSearchLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         
         // 파일 리스트 업데이트
-        const fileItems: FileItem[] = results.map((result, idx) => {
-          // matchType 결정: source 필드로 판단
-          let matchType: 'filename' | 'content' | 'both' | undefined;
-          if (result.source === 'filesystem') {
-            matchType = 'filename';
-          } else if (result.source === 'database') {
-            matchType = 'content';
-          } else if (result.source === 'both') {
-            matchType = 'both';
-          }
-          
-          // 디버깅: 첫 3개 파일의 경로 확인
-          if (idx < 3) {
-            console.log(`🔍 검색 결과 #${idx + 1}:`, result.name);
-            console.log(`   경로:`, result.path);
-            console.log(`   경로 길이:`, result.path?.length);
-            console.log(`   경로 타입:`, typeof result.path);
-          }
-          
-          return {
-            name: result.name,
-            size: result.size ? `${(result.size / 1024).toFixed(1)} KB` : '-',
-            date: result.mtime ? new Date(result.mtime).toLocaleString('ko-KR', {
-              year: 'numeric',
-              month: '2-digit',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: false
-            }) : '-',
-            type: result.extension || 'file',
-            path: result.path,
-            indexed: result.indexed || false,  // 인덱싱 여부 추가
-            matchType: matchType,  // 매칭 타입 추가
-            deleted: result.deleted || false  // 삭제 여부 추가
-          };
-        });
+        const fileItems: FileItem[] = results.map(result => ({
+          name: result.name,
+          size: result.size ? `${(result.size / 1024).toFixed(1)} KB` : '-',
+          date: result.mtime ? new Date(result.mtime).toLocaleString('ko-KR', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+          }) : '-',
+          type: result.extension || 'file',
+          path: result.path,
+          indexed: result.indexed || false  // 인덱싱 여부 추가
+        }));
         
-        // 검색 결과와 함께 검색어도 명시적으로 저장 (하이라이트용)
-        updateActiveTab({ 
-          files: fileItems,
-          searchText: searchTerm  // 검색어 유지
-        });
+        updateActiveTab({ files: fileItems });
         setIsSearching(false);
       }, 50 * results.length + 200);
       
@@ -2281,13 +1847,7 @@ export default function App() {
 
   // --- Context Menu Close ---
   useEffect(() => {
-    const closeMenu = (e: MouseEvent) => {
-      // Context Menu 내부 클릭이 아닐 때만 닫기
-      const target = e.target as HTMLElement;
-      if (!target.closest('.context-menu')) {
-        setContextMenu(p => ({ ...p, visible: false }));
-      }
-    };
+    const closeMenu = () => setContextMenu(p => ({ ...p, visible: false }));
     window.addEventListener('click', closeMenu);
     return () => window.removeEventListener('click', closeMenu);
   }, []);
@@ -2344,268 +1904,55 @@ export default function App() {
         </div>
       )}
 
-      {/* --- Rename Dialog --- */}
-      {renamingFile && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setRenamingFile(null)}>
-          <div className="w-[400px] bg-[#202020] border border-[#444] rounded-lg shadow-2xl p-5 transform scale-100" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-base font-bold text-white mb-4">이름 바꾸기</h3>
-            <div className="mb-4">
-              <label className="text-xs text-gray-400 mb-2 block">새 이름</label>
-              <input
-                type="text"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-                onKeyDown={async (e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    // 이름 변경 실행
-                    if (!newFileName.trim()) {
-                      addSearchLog('❌ 파일 이름을 입력하세요');
-                      return;
-                    }
-                    
-                    try {
-                      if (typeof window !== 'undefined' && (window as any).electronAPI) {
-                        const result = await (window as any).electronAPI.renameFile(renamingFile.path, newFileName);
-                        
-                        if (result.success) {
-                          addSearchLog(`✅ 이름 변경 완료: ${renamingFile.oldName} → ${newFileName}`);
-                          
-                          // 파일 리스트 새로고침
-                          navigate(activeTab.selectedFolder, activeTab.currentPath);
-                        } else {
-                          addSearchLog(`❌ 이름 변경 실패: ${result.error}`);
-                        }
-                      }
-                    } catch (error) {
-                      addSearchLog(`❌ 이름 변경 오류: ${error}`);
-                    }
-                    
-                    setRenamingFile(null);
-                  } else if (e.key === 'Escape') {
-                    setRenamingFile(null);
-                  }
-                }}
-                autoFocus
-                className="w-full px-3 py-2 bg-[#1A1A1A] border border-[#444] rounded text-white text-sm focus:outline-none focus:border-[#0067C0]"
-              />
-              <p className="text-xs text-gray-500 mt-2">이전 이름: {renamingFile.oldName}</p>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setRenamingFile(null)}
-                className="px-4 py-1.5 bg-[#333] hover:bg-[#444] rounded border border-[#555] text-white text-sm transition-colors active:scale-95 duration-100"
-              >
-                취소
-              </button>
-              <button
-                onClick={async () => {
-                  if (!newFileName.trim()) {
-                    addSearchLog('❌ 파일 이름을 입력하세요');
-                    return;
-                  }
-                  
-                  try {
-                    if (typeof window !== 'undefined' && (window as any).electronAPI) {
-                      const result = await (window as any).electronAPI.renameFile(renamingFile.path, newFileName);
-                      
-                      if (result.success) {
-                        addSearchLog(`✅ 이름 변경 완료: ${renamingFile.oldName} → ${newFileName}`);
-                        
-                        // 파일 리스트 새로고침
-                        navigate(activeTab.selectedFolder, activeTab.currentPath);
-                      } else {
-                        addSearchLog(`❌ 이름 변경 실패: ${result.error}`);
-                      }
-                    }
-                  } catch (error) {
-                    addSearchLog(`❌ 이름 변경 오류: ${error}`);
-                  }
-                  
-                  setRenamingFile(null);
-                }}
-                className="px-4 py-1.5 bg-[#0067C0] hover:bg-[#005a9e] rounded text-white text-sm transition-colors active:scale-95 duration-100"
-              >
-                확인
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* --- Context Menu --- */}
       {contextMenu.visible && contextMenu.target && (
-        <div className="context-menu fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
+        <div className="fixed z-50 min-w-[200px] py-1 rounded-md shadow-2xl border flex flex-col bg-[#2D2D2D] border-[#444]" style={{ top: contextMenu.y, left: contextMenu.x }}>
           <div className="px-3 py-2 text-xs text-gray-500 border-b border-[#444] mb-1 truncate max-w-[250px]">{contextMenu.target.path}</div>
           
-          {/* 파일/폴더를 우클릭한 경우 */}
-          {(contextMenu.target!.type !== 'folder' || contextMenu.target!.path !== activeTab.currentPath) ? (
+          {/* 인덱싱하기 (파일만) */}
+          {contextMenu.target.type !== 'folder' && (
             <>
-              {/* 경로 복사 */}
               <button 
                 className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
-                onClick={() => { 
-                  const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
-                  navigator.clipboard.writeText(dirPath); 
-                  addSearchLog(`경로 복사됨: ${dirPath}`);
-                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
-                }}
-              >
-                <Clipboard size={14} className="text-gray-400 group-hover:text-white" /> 
-                경로 복사
-              </button>
-              
-              {/* 파일이름 복사 (파일만) */}
-              {contextMenu.target.type !== 'folder' && (
-                <button 
-                  className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
-                  onClick={() => { 
-                    navigator.clipboard.writeText(contextMenu.target!.name); 
-                    addSearchLog('파일이름 복사됨');
-                    setContextMenu({ visible: false, x: 0, y: 0, target: null });
-                  }}
-                >
-                  <FileText size={14} className="text-gray-400 group-hover:text-white" /> 
-                  파일이름 복사
-                </button>
-              )}
-              
-              <div className="h-px bg-[#444] my-1"></div>
-              
-              {/* 이름바꾸기 */}
-              <button 
-                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" 
-                onClick={() => {
-                  setRenamingFile({
-                    path: contextMenu.target!.path,
-                    oldName: contextMenu.target!.name
-                  });
-                  setNewFileName(contextMenu.target!.name);
-                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
+                onClick={async () => { 
+                  const filePath = contextMenu.target!.path;
+                  try {
+                    addSearchLog(`인덱싱 시작: ${contextMenu.target!.name}`);
+                    const result = await BackendAPI.indexSingleFile(filePath);
+                    
+                    if (result.success) {
+                      addSearchLog(`✅ ${result.message}`);
+                      
+                      // 파일 리스트에서 해당 파일의 인덱싱 상태 업데이트
+                      const updatedFiles = activeTab.files.map(f => 
+                        f.path === filePath ? { ...f, indexed: true } : f
+                      );
+                      updateActiveTab({ files: updatedFiles });
+                    } else {
+                      addSearchLog(`❌ ${result.message}`);
+                    }
+                  } catch (error) {
+                    addSearchLog(`❌ 인덱싱 오류: ${error}`);
+                  }
                 }}
               >
                 <FileText size={14} className="text-gray-400 group-hover:text-white" /> 
-                이름바꾸기
+                인덱싱하기
               </button>
-              
-              {/* 삭제 */}
-              <button 
-                className="w-full text-left px-3 py-1.5 hover:bg-red-600 hover:text-white flex items-center gap-2 group active:bg-red-700 transition-colors duration-75" 
-                onClick={async () => {
-                  const selectedCount = (activeTab.selectedFiles || []).length;
-                  const filesToDelete = selectedCount > 0 
-                    ? activeTab.selectedFiles
-                    : [contextMenu.target!.path];
-                  
-                  const confirmMsg = selectedCount > 0 
-                    ? `선택한 ${selectedCount}개 파일을 휴지통으로 이동하시겠습니까?`
-                    : `'${contextMenu.target!.name}'을(를) 휴지통으로 이동하시겠습니까?`;
-                  
-                  if (!confirm(confirmMsg)) return;
-                  
-                  try {
-                    if (typeof window !== 'undefined' && (window as any).electronAPI) {
-                      const result = await (window as any).electronAPI.deleteFiles(filesToDelete);
-                      
-                      if (result.success) {
-                        const successCount = result.results.filter((r: any) => r.success).length;
-                        addSearchLog(`✅ ${successCount}개 파일 삭제 완료`);
-                        
-                        // 파일 리스트에서 삭제된 파일 제거
-                        const deletedPaths = result.results.filter((r: any) => r.success).map((r: any) => r.path);
-                        const updatedFiles = activeTab.files.filter(f => !deletedPaths.includes(f.path || ''));
-                        updateActiveTab({ 
-                          files: updatedFiles, 
-                          selectedFile: null,
-                          selectedFiles: []
-                        });
-                      } else {
-                        addSearchLog(`❌ 삭제 실패: ${result.error}`);
-                      }
-                    }
-                  } catch (error) {
-                    addSearchLog(`❌ 삭제 오류: ${error}`);
-                  }
-                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
-                }}
-              >
-                <Trash2 size={14} className="text-gray-400 group-hover:text-white" /> 
-                삭제{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
-              </button>
-              
-              {/* 복사 */}
-              <button
-                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const selectedCount = (activeTab.selectedFiles || []).length;
-                  const filesToCopy = selectedCount > 0
-                    ? activeTab.selectedFiles
-                    : [contextMenu.target!.path];
-
-                  console.log('📋 복사할 파일:', filesToCopy);
-                  setClipboardFiles(filesToCopy);
-                  addSearchLog(`✅ 클립보드에 복사: ${filesToCopy.length}개 파일`);
-                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
-                }}
-              >
-                <Copy size={14} className="text-gray-400 group-hover:text-white" />
-                복사{(activeTab.selectedFiles || []).length > 0 && ` (${(activeTab.selectedFiles || []).length}개)`}
-              </button>
-            </>
-          ) : null}
-          
-          {/* 붙여넣기 - 클립보드에 파일이 있을 때만 표시 */}
-          {clipboardFiles.length > 0 && (
-            <>
-              {(contextMenu.target!.type !== 'folder' || contextMenu.target!.path !== activeTab.currentPath) && (
-                <div className="h-px bg-[#444] my-1"></div>
-              )}
-              <button
-                className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  console.log('📌 붙여넣기 클릭, 클립보드:', clipboardFiles);
-                  
-                  // 대상 경로 결정: 폴더를 우클릭했으면 그 폴더로, 아니면 현재 경로로
-                  const destPath = contextMenu.target!.type === 'folder' 
-                    ? contextMenu.target!.path 
-                    : activeTab.currentPath;
-
-                  console.log('📂 붙여넣기 대상:', destPath);
-
-                  try {
-                    if (typeof window !== 'undefined' && (window as any).electronAPI) {
-                      addSearchLog(`⏳ 붙여넣기 시작: ${clipboardFiles.length}개 파일 → ${destPath}`);
-                      const result = await (window as any).electronAPI.copyFiles(clipboardFiles, destPath);
-
-                      console.log('✅ 붙여넣기 결과:', result);
-
-                      if (result.success) {
-                        const successCount = result.results.filter((r: any) => r.success).length;
-                        addSearchLog(`✅ ${successCount}개 파일 붙여넣기 완료`);
-
-                        // 파일 리스트 새로고침
-                        navigate(activeTab.selectedFolder, activeTab.currentPath);
-                      } else {
-                        addSearchLog(`❌ 붙여넣기 실패: ${result.error}`);
-                      }
-                    } else {
-                      addSearchLog('❌ Electron API를 사용할 수 없습니다');
-                    }
-                  } catch (error) {
-                    console.error('❌ 붙여넣기 오류:', error);
-                    addSearchLog(`❌ 붙여넣기 오류: ${error}`);
-                  }
-                  
-                  setContextMenu({ visible: false, x: 0, y: 0, target: null });
-                }}
-              >
-                <Clipboard size={14} className="text-gray-400 group-hover:text-white" />
-                붙여넣기 ({clipboardFiles.length}개)
-              </button>
+              <div className="h-px bg-[#444] my-1"></div>
             </>
           )}
+          
+          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { 
+            const dirPath = contextMenu.target!.path.substring(0, contextMenu.target!.path.lastIndexOf('\\') + 1); 
+            navigator.clipboard.writeText(dirPath); 
+            addSearchLog(`경로 복사됨: ${dirPath}`); 
+          }}>
+            <Copy size={14} className="text-gray-400 group-hover:text-white" /> 경로 복사
+          </button>
+          <button className="w-full text-left px-3 py-1.5 hover:bg-[#0067C0] hover:text-white flex items-center gap-2 group active:bg-[#005a9e] transition-colors duration-75" onClick={() => { navigator.clipboard.writeText(contextMenu.target!.name); addSearchLog('이름 복사됨'); }}>
+            <FileText size={14} className="text-gray-400 group-hover:text-white" /> 이름 복사
+          </button>
         </div>
       )}
 
@@ -2620,20 +1967,19 @@ export default function App() {
         ))}
         <button onClick={() => { 
           const id = nextTabId; 
-          const newFolder = initialFolder;
+          const newFolder = getInitialFolder();
           setTabs([...tabs, { 
             id, 
             title: newFolder.name, 
             searchText: '', 
             selectedFolder: newFolder.name, 
             currentPath: newFolder.path, 
-            selectedFile: null,
-            selectedFiles: [],
-            files: [],
-            sortConfig: {key:null, direction:'asc'},
-            history: [{name: newFolder.name, path: newFolder.path}],
-            historyIndex: 0
-          }]);
+            selectedFile: null, 
+            files: [], 
+            sortConfig: {key:null, direction:'asc'}, 
+            history: [{name: newFolder.name, path: newFolder.path}], 
+            historyIndex: 0 
+          }]); 
           setNextTabId(id+1); 
           setActiveTabId(id); 
         }} tabIndex={-1} className="flex items-center justify-center w-8 h-8 mb-1 rounded hover:bg-[#333] text-[#AAA] hover:text-white active:scale-90 transition-transform duration-100"><Plus size={16} /></button>
@@ -2675,7 +2021,7 @@ export default function App() {
           </button>
           <div className="w-4" />
           <Checkbox label="내용 포함" checked={searchOptions.content} onChange={(v) => setSearchOptions(p => ({...p, content: v}))} />
-          <div className="flex-1" />
+          <Checkbox label="하위 폴더" checked={searchOptions.subfolder} onChange={(v) => setSearchOptions(p => ({...p, subfolder: v}))} />
         </div>
 
         {/* Row 2: Indexing & Filters */}
@@ -2731,7 +2077,7 @@ export default function App() {
                 <button onClick={handleCopy} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="복사"><Copy size={16}/></button>
                 <button onClick={handleRename} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="이름 변경"><Edit2 size={16}/></button>
                 <button onClick={handleDelete} disabled={!hasSelection} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${hasSelection ? 'text-[#D0D0D0] hover:bg-[#333] hover:text-red-400' : 'text-[#555]'}`} title="삭제"><Trash2 size={16}/></button>
-                <button onClick={handlePaste} disabled={clipboardFiles.length === 0} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${clipboardFiles.length > 0 ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="붙여넣기"><Clipboard size={16}/></button>
+                <button onClick={handlePaste} disabled={!clipboard} className={`p-1.5 rounded transition-transform duration-100 active:scale-95 ${clipboard ? 'text-[#D0D0D0] hover:bg-[#333]' : 'text-[#555]'}`} title="붙여넣기"><Clipboard size={16}/></button>
                 <button onClick={handleRefresh} className="p-1.5 text-[#D0D0D0] rounded hover:bg-[#333] active:bg-[#444] active:scale-95 transition-transform duration-100" title="새로고침"><RefreshCw size={16}/></button>
               </div>
             </div>
@@ -2774,69 +2120,17 @@ export default function App() {
               <div style={{ width: colWidths.date }} className="px-2 flex items-center hover:bg-[#333] cursor-pointer text-xs flex-1" onClick={() => handleSort('date')}>수정한 날짜 {activeTab.sortConfig.key === 'date' && (activeTab.sortConfig.direction === 'asc' ? <ArrowUp size={12}/> : <ArrowDown size={12}/>)}</div>
             </div>
             {/* List */}
-            <div 
-              className="flex-1 overflow-y-auto" 
-              onClick={() => updateActiveTab({ selectedFile: null, selectedFiles: [] })}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                // 빈 공간을 우클릭: 현재 폴더를 대상으로 컨텍스트 메뉴 표시
-                setContextMenu({ 
-                  visible: true, 
-                  x: e.clientX, 
-                  y: e.clientY, 
-                  target: { 
-                    name: activeTab.selectedFolder, 
-                    path: activeTab.currentPath, 
-                    type: 'folder' 
-                  } 
-                });
-              }}
-            >
+            <div className="flex-1 overflow-y-auto" onClick={() => updateActiveTab({ selectedFile: null })}>
               <div className="min-w-max">
                 {activeTab.files.map((file, i) => {
                   const { Icon: FileIcon, color: iconColor } = getFileIconProps(file);
-                  const isSelected = activeTab.selectedFile?.name === file.name || (activeTab.selectedFiles || []).includes(file.path || '');
+                  const isSelected = activeTab.selectedFile?.name === file.name;
                   return (
-                    <div
-                      key={i}
+                    <div 
+                      key={i} 
                       // 수평선(border-b) 제거
                       className={`flex h-7 items-center cursor-default text-xs active:bg-[#383838] transition-colors duration-75 ${isSelected ? 'bg-[#333] text-white' : 'text-[#D0D0D0] hover:bg-[#2A2A2A]'}`}
-                      onClick={(e) => { 
-                        e.stopPropagation(); 
-                        
-                        if (!file.path) {
-                          updateActiveTab({ selectedFile: file });
-                          return;
-                        }
-                        
-                        // Ctrl 클릭: 다중 선택 토글
-                        if (e.ctrlKey) {
-                          const currentSelected = activeTab.selectedFiles || [];
-                          const newSelected = currentSelected.includes(file.path)
-                            ? currentSelected.filter(p => p !== file.path)
-                            : [...currentSelected, file.path];
-                          updateActiveTab({ selectedFiles: newSelected, selectedFile: file });
-                        }
-                        // Shift 클릭: 범위 선택
-                        else if (e.shiftKey && activeTab.selectedFile) {
-                          const lastIndex = activeTab.files.findIndex(f => f.path === activeTab.selectedFile?.path);
-                          const currentIndex = i;
-                          const start = Math.min(lastIndex, currentIndex);
-                          const end = Math.max(lastIndex, currentIndex);
-                          
-                          const newSelected: string[] = [];
-                          for (let idx = start; idx <= end; idx++) {
-                            if (activeTab.files[idx].path) {
-                              newSelected.push(activeTab.files[idx].path!);
-                            }
-                          }
-                          updateActiveTab({ selectedFiles: newSelected, selectedFile: file });
-                        }
-                        // 일반 클릭: 단일 선택
-                        else {
-                          updateActiveTab({ selectedFile: file, selectedFiles: [] });
-                        }
-                      }}
+                      onClick={(e) => { e.stopPropagation(); updateActiveTab({ selectedFile: file }); }}
                       onDoubleClick={async () => {
                         if (file.type === 'folder') {
                           navigate(file.name, file.path || `...\\${file.name}`);
@@ -2857,45 +2151,11 @@ export default function App() {
                           }
                         }
                       }}
-                      onContextMenu={(e) => { 
-                        e.preventDefault(); 
-                        e.stopPropagation();
-                        console.log('🖱️ Context Menu 트리거:', file.name, file.type);
-                        setContextMenu({ 
-                          visible: true, 
-                          x: e.clientX, 
-                          y: e.clientY, 
-                          target: { name: file.name, path: file.path || '', type: file.type } 
-                        }); 
-                      }}
+                      onContextMenu={(e) => { e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, target: { name: file.name, path: file.path || '', type: file.type } }); }}
                     >
                       <div style={{ width: colWidths.name }} className="pl-3 pr-2 flex items-center overflow-hidden border-r border-dotted border-[#2a2a2a]">
                         <FileIcon size={14} className="mr-2 flex-shrink-0" style={{ color: iconColor }} />
                         <span className="truncate">{file.name}</span>
-                        {file.matchType && (
-                          <span
-                            className="ml-2 px-1.5 py-0.5 flex-shrink-0 text-[9px] font-bold rounded"
-                            style={{
-                              backgroundColor: file.matchType === 'filename' ? '#3b82f6' : file.matchType === 'content' ? '#10b981' : '#8b5cf6',
-                              color: 'white'
-                            }}
-                            title={
-                              file.matchType === 'filename' ? '파일명에서 검색어 발견' :
-                              file.matchType === 'content' ? '파일 내용에서 검색어 발견' :
-                              '파일명과 내용 모두에서 검색어 발견'
-                            }
-                          >
-                            {file.matchType === 'filename' ? '파일명' : file.matchType === 'content' ? '내용만' : '파일.내용'}
-                          </span>
-                        )}
-                        {file.deleted && (
-                          <span
-                            className="ml-2 px-1.5 py-0.5 flex-shrink-0 text-[9px] font-bold rounded bg-red-600 text-white"
-                            title="이 파일은 삭제되었습니다 (DB에만 남아있음)"
-                          >
-                            삭제됨
-                          </span>
-                        )}
                         {file.indexed !== undefined && (
                           <span 
                             className="ml-2 flex-shrink-0" 
@@ -2938,7 +2198,45 @@ export default function App() {
           {/* Right Panel (Preview) */}
           <div className="flex-1 flex flex-col bg-[#202020] min-w-[200px]">
             <div className="h-8 border-b border-[#444] bg-[#252525] flex items-center justify-between px-3">
-              <span className="text-xs font-bold text-[#D0D0D0]">내용 보기 및 편집</span>
+              <span className="text-xs font-bold text-[#D0D0D0]">{showIndexingLog ? '인덱싱 DB 내역' : '내용 보기 및 편집'}</span>
+              <button 
+                onClick={async () => {
+                  if (!showIndexingLog) {
+                    // 인덱싱 보기로 전환 시 DB 조회
+                    try {
+                      // 선택한 파일이 있으면 해당 파일만, 없으면 전체 조회
+                      if (activeTab.selectedFile && activeTab.selectedFile.type !== 'folder') {
+                        const fileDetail = await BackendAPI.getIndexedFileDetail(activeTab.selectedFile.path);
+                        if (fileDetail) {
+                          // 선택한 파일의 정보를 배열로 변환하여 표시
+                          setIndexedDatabase([{
+                            path: fileDetail.path,
+                            content_length: fileDetail.content_length,
+                            mtime: fileDetail.mtime
+                          }]);
+                          setDbTotalCount(1);
+                        } else {
+                          setIndexedDatabase([]);
+                          setDbTotalCount(0);
+                          addSearchLog('선택한 파일이 인덱싱되지 않았습니다');
+                        }
+                      } else {
+                        const dbResponse = await BackendAPI.getIndexedDatabase(1000, 0);
+                        setIndexedDatabase(dbResponse.files);
+                        setDbTotalCount(dbResponse.total_count);
+                      }
+                    } catch (error) {
+                      console.error('DB 조회 오류:', error);
+                      addSearchLog('DB 조회 실패');
+                    }
+                  }
+                  setShowIndexingLog(!showIndexingLog);
+                }} 
+                className="flex items-center gap-1 text-[11px] px-2 py-0.5 border border-[#444] rounded bg-[#333] text-gray-300 hover:text-white hover:bg-[#444] active:scale-95 transition-transform duration-100"
+              >
+                {showIndexingLog ? <FileText size={10}/> : <List size={10}/>}
+                {showIndexingLog ? '미리보기' : '인덱싱 보기'}
+              </button>
             </div>
             <div className="flex-1 p-4 overflow-auto text-[#D0D0D0] text-xs font-mono">
               {showIndexingLog ? (
@@ -3018,28 +2316,30 @@ export default function App() {
                           ✓ 인덱싱 DB에서 불러온 내용
                         </div>
                       </div>
-                      <button
-                        onClick={handleSummarize}
-                        disabled={isSummarizing}
-                        className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                          isSummarizing
-                            ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
-                        }`}
-                        title="TextRank 알고리즘으로 요약"
-                      >
-                        {isSummarizing ? (
-                          <>
-                            <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                            요약 중...
-                          </>
-                        ) : (
-                          <>
-                            <FileText size={12} />
-                            내용요약
-                          </>
-                        )}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSummarize}
+                          disabled={isSummarizing}
+                          className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                            isSummarizing
+                              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                              : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                          }`}
+                          title="로컬 TextRank 알고리즘으로 요약 (무료)"
+                        >
+                          {isSummarizing ? (
+                            <>
+                              <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                              로컬 요약 중...
+                            </>
+                          ) : (
+                            <>
+                              <FileText size={12} />
+                              로컬 요약
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
                   
@@ -3092,7 +2392,7 @@ export default function App() {
                       style={{ userSelect: 'text' }}
                       onContextMenu={handleTextContextMenu}
                     >
-                      {highlightSearchTerms(fileContent, activeTab.searchText)}
+                      {fileContent}
                     </pre>
                   </div>
                 </div>
@@ -3114,28 +2414,30 @@ export default function App() {
                               </div>
                             </div>
                             {fileContent && !fileContent.includes('⚠️') && (
-                              <button
-                                onClick={handleSummarize}
-                                disabled={isSummarizing}
-                                className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
-                                  isSummarizing
-                                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                                    : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
-                                }`}
-                                title="TextRank 알고리즘으로 요약"
-                              >
-                                {isSummarizing ? (
-                                  <>
-                                    <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                                    요약 중...
-                                  </>
-                                ) : (
-                                  <>
-                                    <FileText size={12} />
-                                    내용요약
-                                  </>
-                                )}
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={handleSummarize}
+                                  disabled={isSummarizing}
+                                  className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs transition-all ${
+                                    isSummarizing
+                                      ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                      : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                                  }`}
+                                  title="로컬 TextRank 알고리즘으로 요약"
+                                >
+                                  {isSummarizing ? (
+                                    <>
+                                      <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                                      로컬 요약 중...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <FileText size={12} />
+                                      로컬 요약
+                                    </>
+                                  )}
+                                </button>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -3202,12 +2504,12 @@ export default function App() {
                                 )}
                               </div>
                               <div className="flex-1 overflow-auto bg-[#1a1a1a] rounded border border-[#2a2a2a] p-3">
-                                <pre
-                                  className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text"
+                                <pre 
+                                  className="text-xs text-gray-300 whitespace-pre-wrap font-mono select-text cursor-text" 
                                   style={{ userSelect: 'text' }}
                                   onContextMenu={handleTextContextMenu}
                                 >
-                                  {highlightSearchTerms(fileContent, activeTab.searchText)}
+                                  {fileContent}
                                 </pre>
                               </div>
                             </div>
